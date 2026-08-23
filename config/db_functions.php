@@ -1,39 +1,48 @@
 <?php
 /**
- * config/db_functions.php
- *
- * Reusable data access layer, now backed by the Supabase REST API
- * (see config/database.php) instead of a native PDO connection. Every
- * route in /api includes this file instead of talking to Supabase(Client)
- * directly, so query/filter logic stays in one place.
+ * Central Supabase data-access layer for customers and WhatsApp messages.
  */
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/app.php';
 require_once __DIR__ . '/database.php';
 
-/**
- * The editable customer profile fields.
- */
+/** Fields agents may edit from the customer form. last_inbound_at is webhook-owned. */
 const CUSTOMER_PROFILE_FIELDS = [
     'first_name', 'last_name', 'username', 'phone',
     'country', 'email', 'city', 'address', 'tax_id', 'details',
+    'wa_id', 'wa_profile_name',
 ];
 
+/** Operational message columns accepted by insertWhatsAppMessage(). */
+const WHATSAPP_MESSAGE_FIELDS = [
+    'created_at', 'direction', 'wa_message_id', 'wa_status', 'wa_error',
+    'msg_type', 'wa_media_id', 'media_path', 'media_mime', 'media_size',
+    'media_name', 'latitude', 'longitude', 'place_name', 'place_address',
+];
+
+/** Keep WhatsApp/PostgREST identifiers digits-only. */
+function normalizeWaId(string $waId): string
+{
+    return preg_replace('/\D+/', '', $waId) ?? '';
+}
+
+/** Quotes an arbitrary PostgREST equality value containing provider punctuation. */
+function postgrestQuotedEq(string $value): string
+{
+    $escaped = str_replace(['\\', '"'], ['\\\\', '\\"'], $value);
+    return 'eq."' . $escaped . '"';
+}
+
 /**
- * Returns a page of customers with a last-message preview, ordered by
- * most recent activity first. Backed by the get_customers_with_preview()
- * Postgres function (see sql/schema.sql) so the join + search + paging
- * all happen in one round trip instead of N+1 REST calls.
+ * Returns one customer page with latest-message previews.
  *
  * @return array{rows: array<int, array<string, mixed>>, hasMore: bool}
  */
 function getCustomers(int $limit = CUSTOMERS_PAGE_SIZE, int $offset = 0, string $search = ''): array
 {
-    $sb = Supabase::client();
-
-    // Ask for one extra row so we know whether another page exists.
-    $rows = $sb->rpc('get_customers_with_preview', [
+    $rows = Supabase::client()->rpc('get_customers_with_preview', [
         'p_search' => $search,
         'p_limit'  => $limit + 1,
         'p_offset' => $offset,
@@ -44,8 +53,6 @@ function getCustomers(int $limit = CUSTOMERS_PAGE_SIZE, int $offset = 0, string 
         array_pop($rows);
     }
 
-    // Normalize field names to match what the frontend expects
-    // (created_at, last_message, last_message_type, ...).
     $rows = array_map(static function (array $row): array {
         unset($row['total_count'], $row['last_activity_id']);
         return $row;
@@ -54,13 +61,10 @@ function getCustomers(int $limit = CUSTOMERS_PAGE_SIZE, int $offset = 0, string 
     return ['rows' => $rows, 'hasMore' => $hasMore];
 }
 
-/**
- * Fetches a single customer by session_id.
- */
+/** Fetches one customer by conversation session ID. */
 function getCustomer(string $sessionId): ?array
 {
-    $sb     = Supabase::client();
-    $result = $sb->get('livar_customer', [
+    $result = Supabase::client()->get('livar_customer', [
         'session_id' => 'eq.' . $sessionId,
         'select'     => '*',
         'limit'      => '1',
@@ -69,104 +73,316 @@ function getCustomer(string $sessionId): ?array
     return $result['rows'][0] ?? null;
 }
 
+/** Fetches one customer by digits-only WhatsApp ID. */
+function getCustomerByWaId(string $waId): ?array
+{
+    $waId = normalizeWaId($waId);
+    if ($waId === '') {
+        return null;
+    }
+
+    $result = Supabase::client()->get('livar_customer', [
+        'wa_id'  => 'eq.' . $waId,
+        'select' => '*',
+        'limit'  => '1',
+    ]);
+
+    return $result['rows'][0] ?? null;
+}
+
 /**
- * Creates a new customer with a freshly generated session_id.
+ * Creates a customer with a generated session ID unless one is supplied.
  *
  * @param array<string, mixed> $data
  */
 function createCustomer(array $data): array
 {
-    $sb        = Supabase::client();
-    $sessionId = $data['session_id'] ?? generate_session_id();
+    $sessionId = is_string($data['session_id'] ?? null) && $data['session_id'] !== ''
+        ? $data['session_id']
+        : generate_session_id();
 
     $payload = ['session_id' => $sessionId];
     foreach (CUSTOMER_PROFILE_FIELDS as $field) {
         $value = $data[$field] ?? null;
+        if ($field === 'wa_id' && is_string($value)) {
+            $value = normalizeWaId($value);
+        }
         $payload[$field] = ($value === '' ? null : $value);
     }
 
-    $rows = $sb->post('livar_customer', $payload);
+    $rows = Supabase::client()->post('livar_customer', $payload);
     return $rows[0] ?? $payload;
 }
 
-/**
- * Updates the editable profile fields of an existing customer.
- * Only keys present in $data are written (partial updates supported).
- */
+/** Partially updates editable profile fields for a customer. */
 function updateCustomer(string $sessionId, array $data): ?array
 {
-    $sb      = Supabase::client();
     $payload = [];
-
     foreach (CUSTOMER_PROFILE_FIELDS as $field) {
-        if (array_key_exists($field, $data)) {
-            $payload[$field] = ($data[$field] === '' ? null : $data[$field]);
+        if (!array_key_exists($field, $data)) {
+            continue;
         }
+
+        $value = $data[$field];
+        if ($field === 'wa_id' && is_string($value)) {
+            $value = normalizeWaId($value);
+        }
+        $payload[$field] = ($value === '' ? null : $value);
     }
 
     if (!$payload) {
         return getCustomer($sessionId);
     }
 
-    $rows = $sb->patch('livar_customer', ['session_id' => 'eq.' . $sessionId], $payload);
+    $rows = Supabase::client()->patch(
+        'livar_customer',
+        ['session_id' => 'eq.' . $sessionId],
+        $payload
+    );
+
     return $rows[0] ?? null;
 }
 
 /**
- * Returns full chat history for a session, oldest first, with each
- * message's JSON payload parsed into `type` and `content`.
+ * Race-free inbound customer creation. Concurrent webhook deliveries for the
+ * same number converge on the wa_id unique index and deterministic session ID.
  */
-function getMessages(string $sessionId): array
+function getOrCreateCustomerByWaId(string $waId, string $profileName = ''): array
 {
-    $sb     = Supabase::client();
-    $result = $sb->get('n8n_chat_history', [
-        'session_id' => 'eq.' . $sessionId,
-        'select'     => 'id,session_id,message',
-        'order'      => 'id.asc',
+    $waId = normalizeWaId($waId);
+    if ($waId === '') {
+        throw new InvalidArgumentException('A valid WhatsApp ID is required.');
+    }
+
+    $payload = [
+        'wa_id'      => $waId,
+        'session_id' => 'wa_' . $waId,
+        'phone'      => $waId,
+    ];
+    $profileName = trim($profileName);
+    if ($profileName !== '') {
+        $payload['wa_profile_name'] = $profileName;
+    }
+
+    $rows = Supabase::client()->upsert('livar_customer', $payload, 'wa_id');
+    return $rows[0] ?? getCustomerByWaId($waId) ?? $payload;
+}
+
+/** Marks the current instant as the customer's latest inbound activity. */
+function touchLastInbound(string $sessionId): void
+{
+    Supabase::client()->patch(
+        'livar_customer',
+        ['session_id' => 'eq.' . $sessionId],
+        ['last_inbound_at' => gmdate('Y-m-d\TH:i:s\Z')]
+    );
+}
+
+/**
+ * Inserts one canonical LangChain-shaped WhatsApp message.
+ *
+ * A duplicate wa_message_id returns null and is a successful webhook retry.
+ *
+ * @param array<string, mixed> $fields
+ */
+function insertWhatsAppMessage(string $sessionId, array $fields): ?array
+{
+    $direction = ($fields['direction'] ?? 'in') === 'out' ? 'out' : 'in';
+    $content = is_string($fields['content'] ?? null) ? $fields['content'] : '';
+    $msgType = is_string($fields['msg_type'] ?? null) && $fields['msg_type'] !== ''
+        ? $fields['msg_type']
+        : 'text';
+
+    $payload = [
+        'session_id' => $sessionId,
+        'message'    => [
+            'type'    => $direction === 'out' ? 'ai' : 'human',
+            'content' => $content,
+        ],
+        'direction'  => $direction,
+        'msg_type'   => $msgType,
+    ];
+
+    foreach (WHATSAPP_MESSAGE_FIELDS as $field) {
+        if (array_key_exists($field, $fields)) {
+            $payload[$field] = $fields[$field] === '' ? null : $fields[$field];
+        }
+    }
+
+    try {
+        $rows = Supabase::client()->post('n8n_chat_history', $payload);
+        return $rows[0] ?? $payload;
+    } catch (SupabaseException $e) {
+        if ($e->httpStatus === 409 && !empty($payload['wa_message_id'])) {
+            return null;
+        }
+        throw $e;
+    }
+}
+
+/** Applies a 360dialog delivery/read/failure status to its outbound message. */
+function updateMessageStatus(string $waMessageId, string $status, string $error = ''): void
+{
+    if ($waMessageId === '') {
+        return;
+    }
+
+    Supabase::client()->patch(
+        'n8n_chat_history',
+        ['wa_message_id' => postgrestQuotedEq($waMessageId)],
+        [
+            'wa_status' => $status,
+            'wa_error'  => $error === '' ? null : $error,
+        ]
+    );
+}
+
+/** Saves an eagerly or lazily downloaded media file against a message row. */
+function setMessageMedia(int $id, string $path, string $mime, int $size): void
+{
+    Supabase::client()->patch(
+        'n8n_chat_history',
+        ['id' => 'eq.' . $id],
+        [
+            'media_path' => $path,
+            'media_mime' => $mime,
+            'media_size' => $size,
+        ]
+    );
+}
+
+/** Returns one raw chat row for authenticated media streaming. */
+function getMessageById(int $id): ?array
+{
+    $result = Supabase::client()->get('n8n_chat_history', [
+        'id'     => 'eq.' . $id,
+        'select' => 'id,session_id,message,created_at,direction,wa_message_id,wa_status,wa_error,msg_type,wa_media_id,media_path,media_mime,media_size,media_name,latitude,longitude,place_name,place_address',
+        'limit'  => '1',
     ]);
 
+    return $result['rows'][0] ?? null;
+}
+
+/**
+ * Normalizes a raw database row for the browser. Returns null for malformed
+ * legacy rows that do not contain LangChain's message.type.
+ *
+ * @param array<string, mixed> $row
+ * @return array<string, mixed>|null
+ */
+function formatChatMessage(array $row): ?array
+{
+    $decoded = is_string($row['message'] ?? null)
+        ? json_decode($row['message'], true)
+        : ($row['message'] ?? null);
+    if (!is_array($decoded) || !isset($decoded['type'])) {
+        return null;
+    }
+
+    $content = $decoded['content'] ?? '';
+    if (!is_string($content)) {
+        $content = is_scalar($content)
+            ? (string) $content
+            : (json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
+    }
+
+    $id = (int) ($row['id'] ?? 0);
+    $msgType = is_string($row['msg_type'] ?? null) && $row['msg_type'] !== ''
+        ? $row['msg_type']
+        : 'text';
+    $hasMedia = in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true);
+
+    return [
+        'id'            => $id,
+        'type'          => (string) $decoded['type'],
+        'content'       => $content,
+        'created_at'    => $row['created_at'] ?? null,
+        'direction'     => $row['direction'] ?? null,
+        'msg_type'      => $msgType,
+        'media_url'     => $hasMedia && $id > 0 ? 'api/media.php?id=' . $id : null,
+        'media_mime'    => $row['media_mime'] ?? null,
+        'media_size'    => isset($row['media_size']) ? (int) $row['media_size'] : null,
+        'media_name'    => $row['media_name'] ?? null,
+        'latitude'      => isset($row['latitude']) ? (float) $row['latitude'] : null,
+        'longitude'     => isset($row['longitude']) ? (float) $row['longitude'] : null,
+        'place_name'    => $row['place_name'] ?? null,
+        'place_address' => $row['place_address'] ?? null,
+        'wa_status'     => $row['wa_status'] ?? null,
+        'wa_error'      => $row['wa_error'] ?? null,
+    ];
+}
+
+/**
+ * Returns a bounded message page, oldest first. sinceId enables incremental
+ * polling without rebuilding the existing conversation.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): array
+{
+    $limit = max(1, min(500, $limit));
+    $initialPage = $sinceId <= 0;
+    $query = [
+        'session_id' => 'eq.' . $sessionId,
+        'select'     => 'id,session_id,message,created_at,direction,wa_message_id,wa_status,wa_error,msg_type,wa_media_id,media_path,media_mime,media_size,media_name,latitude,longitude,place_name,place_address',
+        // Initial loads need the newest bounded window; incremental polls
+        // need rows newer than sinceId. Both are normalized oldest-first.
+        'order'      => $initialPage ? 'id.desc' : 'id.asc',
+        'limit'      => (string) $limit,
+    ];
+    if ($sinceId > 0) {
+        $query['id'] = 'gt.' . $sinceId;
+    }
+
+    $result = Supabase::client()->get('n8n_chat_history', $query);
+    $rows = $initialPage ? array_reverse($result['rows']) : $result['rows'];
     $messages = [];
-    foreach ($result['rows'] as $row) {
-        $decoded = is_string($row['message']) ? json_decode($row['message'], true) : $row['message'];
-        if (!is_array($decoded) || !isset($decoded['type'])) {
-            continue; // Ignore malformed/unknown rows rather than break the chat.
+    foreach ($rows as $row) {
+        $message = formatChatMessage($row);
+        if ($message !== null) {
+            $messages[] = $message;
         }
-        $messages[] = [
-            'id'      => $row['id'],
-            'type'    => $decoded['type'],
-            'content' => $decoded['content'] ?? '',
-        ];
     }
 
     return $messages;
 }
 
 /**
- * Inserts a row shaped like n8n's LangChain message history format.
+ * Returns recent status snapshots so incremental polling also sees updates to
+ * already-rendered outbound rows.
+ *
+ * @return array<int, array{id:int, wa_status:mixed, wa_error:mixed}>
  */
-function insertChatMessage(string $sessionId, string $type, string $content): array
+function getMessageStatuses(string $sessionId, int $limit = 200): array
 {
-    $sb   = Supabase::client();
-    $rows = $sb->post('n8n_chat_history', [
-        'session_id' => $sessionId,
-        'message'    => ['type' => $type, 'content' => $content],
+    $result = Supabase::client()->get('n8n_chat_history', [
+        'session_id' => 'eq.' . $sessionId,
+        'direction'  => 'eq.out',
+        'select'     => 'id,wa_status,wa_error',
+        'order'      => 'id.desc',
+        'limit'      => (string) max(1, min(500, $limit)),
     ]);
 
-    return $rows[0] ?? ['session_id' => $sessionId, 'message' => ['type' => $type, 'content' => $content]];
+    return array_reverse(array_map(static fn (array $row): array => [
+        'id'        => (int) ($row['id'] ?? 0),
+        'wa_status' => $row['wa_status'] ?? null,
+        'wa_error'  => $row['wa_error'] ?? null,
+    ], $result['rows']));
 }
 
-/**
- * Inserts a customer ("human") message into the chat history.
- */
-function insertHumanMessage(string $sessionId, string $content): array
+/** True only while the free-form WhatsApp reply window remains open. */
+function isWithin24hWindow(?string $lastInboundAt): bool
 {
-    return insertChatMessage($sessionId, 'human', $content);
-}
+    if ($lastInboundAt === null || trim($lastInboundAt) === '') {
+        return false;
+    }
 
-/**
- * Inserts an AI-generated reply into the chat history.
- */
-function insertAIMessage(string $sessionId, string $content): array
-{
-    return insertChatMessage($sessionId, 'ai', $content);
+    try {
+        $inbound = new DateTimeImmutable($lastInboundAt);
+    } catch (Throwable) {
+        return false;
+    }
+
+    $age = time() - $inbound->getTimestamp();
+    return $age >= -300 && $age < 86400;
 }

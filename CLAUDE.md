@@ -1,7 +1,8 @@
 # LiVAR Packaging CRM
 
 Mobile-first, WhatsApp-style CRM. PHP 8.1+ backend, vanilla HTML/CSS/JS
-frontend, Supabase (PostgREST) for data, n8n for AI replies.
+frontend, Supabase (PostgREST) for data, 360dialog for WhatsApp, and n8n for
+editable AI drafts.
 **No build step, no package manager, no test suite** — edit a file and
 reload the page.
 
@@ -15,7 +16,7 @@ secret key, and this repo is public). To run anything:
 
 ```bash
 cp config/config.example.php config/config.php
-# then fill in SUPABASE_URL, SUPABASE_SERVICE_KEY, N8N_WEBHOOK_URL
+# then fill in Supabase, login, n8n, and 360dialog constants
 ```
 
 **Never commit `config/config.php`, and never put a real key, URL, or
@@ -31,16 +32,25 @@ template stays placeholders-only.
 - **All data access lives in `config/db_functions.php`**, one function per
   operation. Routes in `/api` include that file; they never call
   `Supabase::client()` directly.
-- **n8n is the only writer to `n8n_chat_history`.** The CRM only reads it.
-  `api/webhook.php` forwards `{ session_id, message }` to n8n and waits;
-  the frontend then re-fetches `api/messages.php`, so **Supabase is always
-  the source of truth**. Never make the CRM insert chat rows, and never
-  render n8n's response body as the actual reply.
-- **Errors:** log the real cause with `error_log('[Supabase] ...')` and
-  return a generic message to the browser via `json_error()`. Don't leak
-  internals in responses.
-- **Schema changes** go in `sql/schema.sql`, which must stay safe to
-  re-run (`create ... if not exists`, `create or replace function`).
+- **The CRM is the only writer to `n8n_chat_history`.** n8n is a stateless
+  draft generator: it receives conversation history, returns text, and
+  touches no table. `api/webhook.php` sends explicit `history` + `customer`
+  context and returns `{draft}`. WhatsApp inbound/outbound routes persist the
+  real messages.
+- **The composer is outbound.** Its contents are what the agent will send to
+  the customer. Drafting fills the composer; only `api/send.php` delivers.
+- **All CRM and API pages require shared-password auth** except
+  `api/whatsapp_webhook.php`, which uses its unguessable URL token. Never add
+  a public send or upload route.
+- **Errors:** log real causes and normally return generic browser errors.
+  `api/send.php` is the deliberate exception: surface 360dialog's provider
+  message so an agent knows why delivery failed.
+- **Schema changes** go in `sql/schema.sql`, which must stay safe to re-run.
+  A changed `RETURNS TABLE` signature needs an explicit `drop function`
+  immediately before recreation.
+- **Private media** lives below `storage/media/`, is always server-named, and
+  is only served through authenticated `api/media.php` after a `realpath()`
+  containment check. Never expose a stored path to the browser.
 
 ## Conventions
 
@@ -58,5 +68,6 @@ page manually:
 
 ```bash
 php -l path/to/file.php
+node --check assets/js/app.js
 php -S localhost:8000   # then open http://localhost:8000
 ```

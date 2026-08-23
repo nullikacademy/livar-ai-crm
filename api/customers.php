@@ -12,8 +12,10 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../config/db_functions.php';
 require_once __DIR__ . '/../config/app.php';
+require_once __DIR__ . '/../config/auth.php';
+require_auth();
+require_once __DIR__ . '/../config/db_functions.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
 
@@ -81,6 +83,8 @@ function handleCreate(): void
         'address'    => input_str($data, 'address'),
         'tax_id'     => input_str($data, 'tax_id'),
         'details'    => input_str($data, 'details'),
+        'wa_id'      => input_str($data, 'wa_id'),
+        'wa_profile_name' => input_str($data, 'wa_profile_name'),
     ]);
 
     json_response(['success' => true, 'customer' => $customer], 201);

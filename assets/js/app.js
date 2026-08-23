@@ -1,28 +1,23 @@
 /**
- * assets/js/app.js
- *
- * LiVAR Packaging CRM — vanilla JS frontend.
- * No build step, no framework: everything below talks to /api/*.php
- * over fetch() and renders plain DOM.
+ * LiVAR Packaging CRM — authenticated WhatsApp inbox frontend.
  */
 (() => {
     'use strict';
 
-    // ------------------------------------------------------------------
-    // Config & DOM references
-    // ------------------------------------------------------------------
-
     const API = {
         customers: 'api/customers.php',
         messages: 'api/messages.php',
-        webhook: 'api/webhook.php',
+        draft: 'api/webhook.php',
+        send: 'api/send.php',
+        upload: 'api/upload.php',
     };
-
     const PAGE_SIZE = 30;
+    const DESKTOP_QUERY = '(min-width: 900px)';
+    const MESSAGE_POLL_MS = 8000;
+    const SIDEBAR_POLL_MS = 25000;
 
     const el = {
         app: document.getElementById('app'),
-        // Sidebar
         sidebar: document.getElementById('sidebar'),
         searchInput: document.getElementById('searchInput'),
         searchClear: document.getElementById('searchClear'),
@@ -30,7 +25,6 @@
         customerSkeleton: document.getElementById('customerSkeleton'),
         customerListEmpty: document.getElementById('customerListEmpty'),
         newChatBtn: document.getElementById('newChatBtn'),
-        // Chat
         chat: document.getElementById('chat'),
         chatPlaceholder: document.getElementById('chatPlaceholder'),
         chatConversation: document.getElementById('chatConversation'),
@@ -39,85 +33,114 @@
         chatAvatar: document.getElementById('chatAvatar'),
         chatCustomerName: document.getElementById('chatCustomerName'),
         chatCustomerPhone: document.getElementById('chatCustomerPhone'),
+        chatWindowStatus: document.getElementById('chatWindowStatus'),
         chatDetailsBtn: document.getElementById('chatDetailsBtn'),
         chatMessages: document.getElementById('chatMessages'),
         messagesSkeleton: document.getElementById('messagesSkeleton'),
         scrollJumpBtn: document.getElementById('scrollJumpBtn'),
+        windowNotice: document.getElementById('windowNotice'),
         composerInput: document.getElementById('composerInput'),
         generateBtn: document.getElementById('generateBtn'),
-        // Details panel
+        sendBtn: document.getElementById('sendBtn'),
+        attachBtn: document.getElementById('attachBtn'),
+        attachInput: document.getElementById('attachInput'),
+        attachMenu: document.getElementById('attachMenu'),
+        chooseFileBtn: document.getElementById('chooseFileBtn'),
+        chooseLocationBtn: document.getElementById('chooseLocationBtn'),
+        attachmentPreview: document.getElementById('attachmentPreview'),
+        attachmentThumb: document.getElementById('attachmentThumb'),
+        attachmentName: document.getElementById('attachmentName'),
+        attachmentMeta: document.getElementById('attachmentMeta'),
+        removeAttachmentBtn: document.getElementById('removeAttachmentBtn'),
+        locationForm: document.getElementById('locationForm'),
+        locationLatitude: document.getElementById('locationLatitude'),
+        locationLongitude: document.getElementById('locationLongitude'),
+        locationName: document.getElementById('locationName'),
+        locationAddress: document.getElementById('locationAddress'),
+        cancelLocationBtn: document.getElementById('cancelLocationBtn'),
+        applyLocationBtn: document.getElementById('applyLocationBtn'),
+        lightbox: document.getElementById('lightbox'),
+        lightboxImage: document.getElementById('lightboxImage'),
+        lightboxClose: document.getElementById('lightboxClose'),
         panelOverlay: document.getElementById('panelOverlay'),
         detailsPanel: document.getElementById('detailsPanel'),
         closeDetailsBtn: document.getElementById('closeDetailsBtn'),
         detailsForm: document.getElementById('detailsForm'),
         saveDetailsBtn: document.getElementById('saveDetailsBtn'),
-        // Misc
         toastStack: document.getElementById('toastStack'),
     };
 
-    // ------------------------------------------------------------------
-    // App state
-    // ------------------------------------------------------------------
-
     const state = {
-        customers: [],          // loaded customer rows (sidebar order)
+        customers: [],
         offset: 0,
         hasMore: true,
         isLoadingCustomers: false,
+        isPollingSidebar: false,
+        isPollingMessages: false,
         search: '',
         selectedSessionId: null,
         selectedCustomer: null,
         messages: [],
         isSending: false,
+        isDrafting: false,
+        isUploading: false,
+        attachment: null,
+        uploadSequence: 0,
+        windowOpen: false,
+        messagePollTimer: null,
+        sidebarPollTimer: null,
     };
 
-    // ------------------------------------------------------------------
-    // Small utilities
-    // ------------------------------------------------------------------
-
-    function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str ?? '';
-        return div.innerHTML;
-    }
-
     function debounce(fn, wait) {
-        let t;
+        let timer;
         return (...args) => {
-            clearTimeout(t);
-            t = setTimeout(() => fn(...args), wait);
+            clearTimeout(timer);
+            timer = setTimeout(() => fn(...args), wait);
         };
     }
 
     function fullName(customer) {
         const name = [customer.first_name, customer.last_name].filter(Boolean).join(' ').trim();
-        return name || customer.username || customer.phone || 'Unnamed customer';
+        return name
+            || customer.wa_profile_name
+            || customer.username
+            || customer.phone
+            || customer.wa_id
+            || 'Unnamed customer';
     }
 
     function initials(customer) {
-        const name = fullName(customer);
-        const parts = name.split(' ').filter(Boolean);
+        const parts = fullName(customer).split(' ').filter(Boolean);
         if (parts.length === 0) return '?';
         if (parts.length === 1) return parts[0].slice(0, 2);
-        return (parts[0][0] + parts[1][0]);
+        return parts[0][0] + parts[1][0];
     }
 
-    function relativeTime(idOrDate) {
-        // We only have sequential message ids for "last activity" in this
-        // schema (no timestamp column on n8n_chat_history), so we fall back
-        // to the customer's created_at when there is no message yet.
-        if (!idOrDate) return '';
-        const date = new Date(idOrDate);
-        if (isNaN(date.getTime())) return '';
-        const diffMs = Date.now() - date.getTime();
-        const mins = Math.round(diffMs / 60000);
-        if (mins < 1) return 'now';
-        if (mins < 60) return `${mins}m`;
-        const hours = Math.round(mins / 60);
+    function relativeTime(value) {
+        if (!value) return '';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        const minutes = Math.max(0, Math.round((Date.now() - date.getTime()) / 60000));
+        if (minutes < 1) return 'now';
+        if (minutes < 60) return `${minutes}m`;
+        const hours = Math.round(minutes / 60);
         if (hours < 24) return `${hours}h`;
         const days = Math.round(hours / 24);
         if (days < 7) return `${days}d`;
         return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+
+    function truncate(value, max) {
+        const text = String(value || '');
+        return text.length > max ? text.slice(0, max - 1) + '…' : text;
+    }
+
+    function formatBytes(size) {
+        const bytes = Number(size);
+        if (!Number.isFinite(bytes) || bytes <= 0) return '';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     }
 
     function toast(message, variant = 'success') {
@@ -125,35 +148,48 @@
         node.className = `toast toast--${variant}`;
         node.textContent = message;
         el.toastStack.appendChild(node);
-        setTimeout(() => node.remove(), 2900);
+        setTimeout(() => node.remove(), 3200);
     }
 
     async function api(url, options = {}) {
-        const res = await fetch(url, {
-            headers: { 'Content-Type': 'application/json' },
-            ...options,
-        });
+        const request = { ...options };
+        const headers = new Headers(options.headers || {});
+        if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
+            headers.set('Content-Type', 'application/json');
+        }
+        request.headers = headers;
+
+        const response = await fetch(url, request);
         let data;
         try {
-            data = await res.json();
+            data = await response.json();
         } catch {
             throw new Error('Unexpected server response.');
         }
-        if (!res.ok || data.success === false) {
+        if (response.status === 401) {
+            window.location.assign('login.php');
+            throw new Error('Authentication required.');
+        }
+        if (!response.ok || data.success === false) {
             throw new Error(data.error || 'Something went wrong.');
         }
         return data;
     }
 
+    function isDesktop() {
+        return typeof window.matchMedia === 'function'
+            ? window.matchMedia(DESKTOP_QUERY).matches
+            : window.innerWidth >= 900;
+    }
+
     // ------------------------------------------------------------------
-    // Customer list
+    // Sidebar
     // ------------------------------------------------------------------
 
     async function loadCustomers({ reset = false } = {}) {
-        if (state.isLoadingCustomers) return;
-        if (!reset && !state.hasMore) return;
-
+        if (state.isLoadingCustomers || (!reset && !state.hasMore)) return;
         state.isLoadingCustomers = true;
+
         if (reset) {
             state.offset = 0;
             state.hasMore = true;
@@ -163,44 +199,42 @@
 
         try {
             const params = new URLSearchParams({
-                limit: PAGE_SIZE,
-                offset: state.offset,
+                limit: String(PAGE_SIZE),
+                offset: String(state.offset),
                 search: state.search,
             });
             const data = await api(`${API.customers}?${params.toString()}`);
 
             if (reset) {
-                state.customers = [];
-                clearCustomerListDom();
+                state.customers = data.customers;
+            } else {
+                mergeCustomerRows(data.customers, false);
             }
-
-            state.customers.push(...data.customers);
             state.hasMore = data.hasMore;
             state.offset = data.nextOffset;
-
-            renderCustomers(data.customers, { append: !reset });
-
-            if (state.customers.length === 0) {
-                el.customerListEmpty.hidden = false;
-            } else {
-                el.customerListEmpty.hidden = true;
-            }
-        } catch (err) {
-            toast(err.message, 'error');
+            renderCustomerList();
+        } catch (error) {
+            toast(error.message, 'error');
         } finally {
             el.customerSkeleton.hidden = true;
             state.isLoadingCustomers = false;
         }
     }
 
-    function clearCustomerListDom() {
-        el.customerList.querySelectorAll('.customer-item').forEach((n) => n.remove());
+    function mergeCustomerRows(rows, putFirst) {
+        const incomingIds = new Set(rows.map((row) => row.session_id));
+        const existing = new Map(state.customers.map((row) => [row.session_id, row]));
+        const merged = rows.map((row) => ({ ...(existing.get(row.session_id) || {}), ...row }));
+        const remainder = state.customers.filter((row) => !incomingIds.has(row.session_id));
+        state.customers = putFirst ? [...merged, ...remainder] : [...remainder, ...merged];
     }
 
-    function renderCustomers(customers) {
-        const frag = document.createDocumentFragment();
-        customers.forEach((customer) => frag.appendChild(buildCustomerItem(customer)));
-        el.customerList.appendChild(frag);
+    function renderCustomerList() {
+        el.customerList.querySelectorAll('.customer-item').forEach((node) => node.remove());
+        const fragment = document.createDocumentFragment();
+        state.customers.forEach((customer) => fragment.appendChild(buildCustomerItem(customer)));
+        el.customerList.appendChild(fragment);
+        el.customerListEmpty.hidden = state.customers.length !== 0;
     }
 
     function buildCustomerItem(customer) {
@@ -209,56 +243,64 @@
         item.className = 'customer-item';
         item.setAttribute('role', 'option');
         item.dataset.sessionId = customer.session_id;
-        if (customer.session_id === state.selectedSessionId) {
-            item.classList.add('is-selected');
+        item.classList.toggle('is-selected', customer.session_id === state.selectedSessionId);
+
+        const avatar = document.createElement('span');
+        avatar.className = 'avatar';
+        avatar.textContent = initials(customer);
+
+        const body = document.createElement('span');
+        body.className = 'customer-item__body';
+        const top = document.createElement('span');
+        top.className = 'customer-item__top';
+        const name = document.createElement('span');
+        name.className = 'customer-item__name';
+        name.textContent = fullName(customer);
+        const time = document.createElement('span');
+        time.className = 'customer-item__time';
+        time.textContent = relativeTime(customer.last_message_created_at || customer.created_at);
+        top.append(name, time);
+
+        const preview = document.createElement('span');
+        preview.className = 'customer-item__preview';
+        if (customer.last_message) {
+            if (customer.last_message_type === 'ai') {
+                const prefix = document.createElement('span');
+                prefix.className = 'customer-item__preview-prefix';
+                prefix.textContent = 'You: ';
+                preview.appendChild(prefix);
+            }
+            preview.appendChild(document.createTextNode(truncate(customer.last_message, 46)));
+        } else {
+            const empty = document.createElement('span');
+            empty.className = 'customer-item__phone';
+            empty.textContent = 'No messages yet';
+            preview.appendChild(empty);
         }
 
-        const preview = customer.last_message
-            ? escapeHtml(truncate(customer.last_message, 46))
-            : '<span class="customer-item__phone">No messages yet</span>';
-        const prefix = customer.last_message_type === 'ai'
-            ? '<span class="customer-item__preview-prefix">You: </span>'
-            : '';
-
-        item.innerHTML = `
-            <span class="avatar">${escapeHtml(initials(customer))}</span>
-            <span class="customer-item__body">
-                <span class="customer-item__top">
-                    <span class="customer-item__name">${escapeHtml(fullName(customer))}</span>
-                    <span class="customer-item__time">${escapeHtml(relativeTime(customer.created_at))}</span>
-                </span>
-                <span class="customer-item__preview">${prefix}${preview}</span>
-            </span>
-        `;
-
+        body.append(top, preview);
+        item.append(avatar, body);
         item.addEventListener('click', () => selectCustomer(customer.session_id, { focusComposer: true }));
         return item;
     }
 
-    function truncate(str, max) {
-        if (!str) return '';
-        return str.length > max ? str.slice(0, max - 1) + '…' : str;
-    }
-
-    function updateCustomerItemInList(customer) {
-        const idx = state.customers.findIndex((c) => c.session_id === customer.session_id);
-        if (idx !== -1) {
-            state.customers[idx] = { ...state.customers[idx], ...customer };
+    function updateCustomerInState(customer, moveFirst = false) {
+        const index = state.customers.findIndex((row) => row.session_id === customer.session_id);
+        const merged = { ...(index >= 0 ? state.customers[index] : {}), ...customer };
+        if (index >= 0) state.customers.splice(index, 1);
+        if (moveFirst) {
+            state.customers.unshift(merged);
+        } else if (index >= 0) {
+            state.customers.splice(index, 0, merged);
+        } else {
+            state.customers.push(merged);
         }
-        const node = el.customerList.querySelector(`.customer-item[data-session-id="${cssEscape(customer.session_id)}"]`);
-        if (node) {
-            const fresh = buildCustomerItem({ ...(idx !== -1 ? state.customers[idx] : customer) });
-            node.replaceWith(fresh);
-        }
-    }
-
-    function cssEscape(str) {
-        return window.CSS && CSS.escape ? CSS.escape(str) : str.replace(/["\\]/g, '\\$&');
+        renderCustomerList();
     }
 
     function markSelectedInList(sessionId) {
-        el.customerList.querySelectorAll('.customer-item').forEach((n) => {
-            n.classList.toggle('is-selected', n.dataset.sessionId === sessionId);
+        el.customerList.querySelectorAll('.customer-item').forEach((node) => {
+            node.classList.toggle('is-selected', node.dataset.sessionId === sessionId);
         });
     }
 
@@ -268,7 +310,7 @@
         loadCustomers({ reset: true });
     }, 300);
 
-    el.searchInput.addEventListener('input', (e) => onSearchInput(e.target.value));
+    el.searchInput.addEventListener('input', (event) => onSearchInput(event.target.value));
     el.searchClear.addEventListener('click', () => {
         el.searchInput.value = '';
         el.searchClear.hidden = true;
@@ -276,171 +318,442 @@
         loadCustomers({ reset: true });
         el.searchInput.focus();
     });
-
-    // Infinite scroll
     el.customerList.addEventListener('scroll', () => {
         const { scrollTop, scrollHeight, clientHeight } = el.customerList;
-        if (scrollHeight - scrollTop - clientHeight < 160) {
-            loadCustomers();
-        }
+        if (scrollHeight - scrollTop - clientHeight < 160) loadCustomers();
     });
 
     // ------------------------------------------------------------------
-    // Selecting a customer / loading chat
+    // Conversation loading and polling
     // ------------------------------------------------------------------
 
     async function selectCustomer(sessionId, { focusComposer = false } = {}) {
         state.selectedSessionId = sessionId;
+        state.selectedCustomer = null;
+        state.messages = [];
         markSelectedInList(sessionId);
+        clearAttachment();
+        el.composerInput.value = '';
+        autoGrowComposer();
 
         el.app.classList.add('is-chat-open');
         el.chatPlaceholder.hidden = true;
         el.chatConversation.hidden = false;
-
-        const known = state.customers.find((c) => c.session_id === sessionId);
-        if (known) applyCustomerToHeader(known);
-
         el.messagesSkeleton.hidden = false;
         clearMessageBubbles();
 
-        try {
-            const [customerData, messagesData] = await Promise.all([
-                api(`${API.customers}?session_id=${encodeURIComponent(sessionId)}`),
-                api(`${API.messages}?session_id=${encodeURIComponent(sessionId)}`),
-            ]);
+        const known = state.customers.find((customer) => customer.session_id === sessionId);
+        if (known) {
+            state.selectedCustomer = known;
+            applyCustomerToHeader(known);
+            updateWindowState(known);
+        }
 
-            // Guard against a race: the user may have tapped another
-            // customer while these requests were still in flight.
+        try {
+            const [customerData, messageData] = await Promise.all([
+                api(`${API.customers}?session_id=${encodeURIComponent(sessionId)}`),
+                api(`${API.messages}?session_id=${encodeURIComponent(sessionId)}&since_id=0&limit=200`),
+            ]);
             if (sessionId !== state.selectedSessionId) return;
 
             state.selectedCustomer = customerData.customer;
+            state.messages = messageData.messages;
+            applyStatuses(messageData.statuses || []);
             applyCustomerToHeader(customerData.customer);
-
-            state.messages = messagesData.messages;
+            updateWindowState(customerData.customer);
             renderMessages({ scroll: true });
+            startPolling();
 
-            // Only steal focus on pointer/desktop -- auto-focusing on a
-            // phone pops the keyboard over the conversation you just opened.
             if (focusComposer && isDesktop()) el.composerInput.focus();
-        } catch (err) {
-            toast(err.message, 'error');
+        } catch (error) {
+            toast(error.message, 'error');
         } finally {
             el.messagesSkeleton.hidden = true;
         }
     }
 
-    /** True when the two-pane desktop layout is active (matches the CSS breakpoint). */
-    const DESKTOP_QUERY = '(min-width: 900px)';
-
-    function isDesktop() {
-        return typeof window.matchMedia === 'function'
-            ? window.matchMedia(DESKTOP_QUERY).matches
-            : window.innerWidth >= 900;
-    }
-
     function applyCustomerToHeader(customer) {
         el.chatAvatar.textContent = initials(customer);
         el.chatCustomerName.textContent = fullName(customer);
-        el.chatCustomerPhone.textContent = customer.phone || customer.email || 'No phone on file';
+        const phone = customer.wa_id ? `+${customer.wa_id}` : (customer.phone || customer.email || 'No phone on file');
+        el.chatCustomerPhone.textContent = phone;
     }
+
+    function maxMessageId() {
+        return state.messages.reduce((max, message) => {
+            const id = Number(message.id);
+            return Number.isFinite(id) ? Math.max(max, id) : max;
+        }, 0);
+    }
+
+    async function pollOpenConversation() {
+        if (
+            state.isPollingMessages
+            || !state.selectedSessionId
+            || document.hidden
+            || (!isDesktop() && !el.app.classList.contains('is-chat-open'))
+        ) return;
+
+        state.isPollingMessages = true;
+        const sessionId = state.selectedSessionId;
+        try {
+            const sinceId = maxMessageId();
+            const [messageData, customerData] = await Promise.all([
+                api(`${API.messages}?session_id=${encodeURIComponent(sessionId)}&since_id=${sinceId}&limit=200`),
+                api(`${API.customers}?session_id=${encodeURIComponent(sessionId)}`),
+            ]);
+            if (sessionId !== state.selectedSessionId) return;
+
+            appendMessages(messageData.messages || []);
+            applyStatuses(messageData.statuses || []);
+            state.selectedCustomer = customerData.customer;
+            applyCustomerToHeader(customerData.customer);
+            updateWindowState(customerData.customer);
+            updateCustomerInState(customerData.customer, false);
+        } catch (error) {
+            console.warn('[LiVAR] Conversation poll failed:', error.message);
+        } finally {
+            state.isPollingMessages = false;
+        }
+    }
+
+    async function refreshSidebarFirstPage() {
+        if (state.isPollingSidebar || state.isLoadingCustomers || document.hidden) return;
+        state.isPollingSidebar = true;
+        try {
+            const params = new URLSearchParams({
+                limit: String(PAGE_SIZE),
+                offset: '0',
+                search: state.search,
+            });
+            const data = await api(`${API.customers}?${params.toString()}`);
+            mergeCustomerRows(data.customers, true);
+            renderCustomerList();
+        } catch (error) {
+            console.warn('[LiVAR] Sidebar poll failed:', error.message);
+        } finally {
+            state.isPollingSidebar = false;
+        }
+    }
+
+    function startPolling() {
+        stopPolling();
+        if (document.hidden) return;
+        state.messagePollTimer = window.setInterval(pollOpenConversation, MESSAGE_POLL_MS);
+        state.sidebarPollTimer = window.setInterval(refreshSidebarFirstPage, SIDEBAR_POLL_MS);
+    }
+
+    function stopPolling() {
+        if (state.messagePollTimer !== null) clearInterval(state.messagePollTimer);
+        if (state.sidebarPollTimer !== null) clearInterval(state.sidebarPollTimer);
+        state.messagePollTimer = null;
+        state.sidebarPollTimer = null;
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopPolling();
+            return;
+        }
+        pollOpenConversation();
+        refreshSidebarFirstPage();
+        startPolling();
+    });
+
+    // ------------------------------------------------------------------
+    // Message rendering
+    // ------------------------------------------------------------------
 
     function clearMessageBubbles() {
-        el.chatMessages.querySelectorAll('.bubble-row, .chat__day-divider, .chat__empty-state').forEach((n) => n.remove());
+        el.chatMessages
+            .querySelectorAll('.bubble-row, .chat__day-divider, .chat__empty-state')
+            .forEach((node) => node.remove());
     }
 
-    function renderMessages({ scroll = false, highlightLastAi = false } = {}) {
+    function renderMessages({ scroll = false } = {}) {
         clearMessageBubbles();
-
         if (state.messages.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'chat__empty-state';
-            empty.textContent = 'No messages yet. Start the conversation below.';
+            empty.textContent = 'No messages yet.';
             el.chatMessages.appendChild(empty);
             return;
         }
 
-        const frag = document.createDocumentFragment();
-        let lastAiRow = null;
-
-        state.messages.forEach((msg) => {
-            const row = buildBubbleRow(msg);
-            frag.appendChild(row);
-            if (msg.type === 'ai') lastAiRow = row;
-        });
-
-        el.chatMessages.appendChild(frag);
-
-        if (highlightLastAi && lastAiRow) {
-            const bubble = lastAiRow.querySelector('.bubble');
-            requestAnimationFrame(() => bubble.classList.add('is-new'));
-        }
-
+        const fragment = document.createDocumentFragment();
+        state.messages.forEach((message) => fragment.appendChild(buildBubbleRow(message)));
+        el.chatMessages.appendChild(fragment);
         if (scroll) scrollMessagesToBottom();
     }
 
-    function buildBubbleRow(msg) {
-        const isOurs = msg.type === 'ai';
+    function appendMessages(messages) {
+        if (!messages.length) return;
+        const existing = new Set(state.messages.map((message) => String(message.id)));
+        const newOnes = messages.filter((message) => !existing.has(String(message.id)));
+        if (!newOnes.length) return;
+
+        const nearBottom = el.chatMessages.scrollHeight - el.chatMessages.scrollTop - el.chatMessages.clientHeight < 160;
+        el.chatMessages.querySelector('.chat__empty-state')?.remove();
+        const fragment = document.createDocumentFragment();
+        newOnes.forEach((message) => {
+            state.messages.push(message);
+            fragment.appendChild(buildBubbleRow(message));
+        });
+        el.chatMessages.appendChild(fragment);
+        if (nearBottom) scrollMessagesToBottom(true);
+    }
+
+    function isOurMessage(message) {
+        return message.direction === 'out'
+            || (message.direction == null && message.type === 'ai');
+    }
+
+    function buildBubbleRow(message) {
+        const ours = isOurMessage(message);
         const row = document.createElement('div');
-        row.className = `bubble-row ${isOurs ? 'bubble-row--ours' : 'bubble-row--customer'}`;
+        row.className = `bubble-row ${ours ? 'bubble-row--ours' : 'bubble-row--customer'}`;
+        row.dataset.messageId = String(message.id);
 
         const bubble = document.createElement('div');
-        bubble.className = `bubble ${isOurs ? 'bubble--ours' : 'bubble--customer'}`;
-        if (msg.pending) bubble.classList.add('is-pending');
+        bubble.className = `bubble ${ours ? 'bubble--ours' : 'bubble--customer'}`;
+        if (message.pending) bubble.classList.add('is-pending');
 
-        const text = document.createElement('div');
-        text.className = 'bubble__text';
-        text.textContent = msg.content;
-        bubble.appendChild(text);
+        const mediaType = ['image', 'video', 'audio', 'document', 'location', 'sticker'].includes(message.msg_type);
+        if (mediaType) bubble.classList.add('bubble--media');
+        appendMessageBody(bubble, message);
 
-        if (isOurs) {
+        if (mediaType && message.content) {
+            const caption = document.createElement('div');
+            caption.className = 'bubble__caption';
+            appendLinkifiedText(caption, message.content);
+            bubble.appendChild(caption);
+        }
+
+        if (ours && message.content && message.msg_type === 'text') {
             const actions = document.createElement('div');
             actions.className = 'bubble__actions';
-            const copyBtn = document.createElement('button');
-            copyBtn.type = 'button';
-            copyBtn.className = 'bubble__copy';
-            copyBtn.innerHTML = copyIconSvg() + '<span>Copy</span>';
-            copyBtn.addEventListener('click', () => copyToClipboard(msg.content, copyBtn));
-            actions.appendChild(copyBtn);
+            const copyButton = document.createElement('button');
+            copyButton.type = 'button';
+            copyButton.className = 'bubble__copy';
+            copyButton.innerHTML = copyIconSvg() + '<span>Copy</span>';
+            copyButton.addEventListener('click', () => copyToClipboard(message.content, copyButton));
+            actions.appendChild(copyButton);
             bubble.appendChild(actions);
         }
 
         row.appendChild(bubble);
+        updateBubbleStatusNode(row, message);
         return row;
+    }
+
+    function appendMessageBody(bubble, message) {
+        switch (message.msg_type) {
+            case 'image':
+            case 'sticker': {
+                if (!message.media_url) {
+                    appendUnsupported(bubble, 'Media unavailable');
+                    return;
+                }
+                const image = document.createElement('img');
+                image.className = 'bubble__image';
+                image.loading = 'lazy';
+                image.alt = message.msg_type === 'sticker' ? 'Sticker' : 'Photo attachment';
+                image.src = message.media_url;
+                image.addEventListener('click', () => openLightbox(message.media_url));
+                bubble.appendChild(image);
+                return;
+            }
+            case 'video': {
+                const video = document.createElement('video');
+                video.className = 'bubble__video';
+                video.controls = true;
+                video.preload = 'metadata';
+                if (message.media_url) video.src = message.media_url;
+                bubble.appendChild(video);
+                return;
+            }
+            case 'audio': {
+                const audio = document.createElement('audio');
+                audio.className = 'bubble__audio';
+                audio.controls = true;
+                audio.preload = 'metadata';
+                if (message.media_url) audio.src = message.media_url;
+                bubble.appendChild(audio);
+                return;
+            }
+            case 'document': {
+                const link = document.createElement('a');
+                link.className = 'bubble__doc';
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                if (message.media_url) link.href = message.media_url;
+                const icon = document.createElement('span');
+                icon.className = 'bubble__doc-icon';
+                icon.textContent = '📄';
+                const meta = document.createElement('span');
+                meta.className = 'bubble__doc-meta';
+                const filename = document.createElement('strong');
+                filename.textContent = message.media_name || 'Document';
+                const size = document.createElement('small');
+                size.textContent = formatBytes(message.media_size) || 'Open document';
+                meta.append(filename, size);
+                link.append(icon, meta);
+                bubble.appendChild(link);
+                return;
+            }
+            case 'location': {
+                const card = document.createElement('a');
+                card.className = 'bubble__location';
+                card.target = '_blank';
+                card.rel = 'noopener noreferrer';
+                if (Number.isFinite(Number(message.latitude)) && Number.isFinite(Number(message.longitude))) {
+                    card.href = `https://www.google.com/maps?q=${encodeURIComponent(message.latitude)},${encodeURIComponent(message.longitude)}`;
+                }
+                const icon = document.createElement('span');
+                icon.textContent = '📍';
+                const details = document.createElement('span');
+                const name = document.createElement('strong');
+                name.textContent = message.place_name || 'Location';
+                const address = document.createElement('small');
+                address.textContent = message.place_address || 'Open in Google Maps';
+                details.append(name, address);
+                card.append(icon, details);
+                bubble.appendChild(card);
+                return;
+            }
+            case 'unsupported':
+                appendUnsupported(bubble, 'Unsupported message type');
+                return;
+            case 'text':
+            default: {
+                const text = document.createElement('div');
+                text.className = 'bubble__text';
+                appendLinkifiedText(text, message.content || '');
+                bubble.appendChild(text);
+            }
+        }
+    }
+
+    function appendUnsupported(bubble, label) {
+        const unsupported = document.createElement('div');
+        unsupported.className = 'bubble__unsupported';
+        unsupported.textContent = label;
+        bubble.appendChild(unsupported);
+    }
+
+    function appendLinkifiedText(container, text) {
+        const value = String(text || '');
+        const regex = /https?:\/\/[^\s<>"']+/gi;
+        let cursor = 0;
+        let match;
+        while ((match = regex.exec(value)) !== null) {
+            if (match.index > cursor) {
+                container.appendChild(document.createTextNode(value.slice(cursor, match.index)));
+            }
+            const anchor = document.createElement('a');
+            anchor.href = match[0];
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            anchor.textContent = match[0];
+            container.appendChild(anchor);
+            cursor = match.index + match[0].length;
+        }
+        if (cursor < value.length) {
+            container.appendChild(document.createTextNode(value.slice(cursor)));
+        }
+    }
+
+    function updateBubbleStatusNode(row, message) {
+        row.querySelector('.bubble__status')?.remove();
+        if (!isOurMessage(message)) return;
+
+        const status = document.createElement('div');
+        status.className = 'bubble__status';
+        if (message.pending || message.wa_status === 'sending') {
+            status.textContent = 'Sending…';
+        } else if (message.wa_status === 'failed') {
+            status.classList.add('is-failed');
+            status.textContent = 'Failed';
+            if (message.wa_error) status.title = message.wa_error;
+        } else if (message.wa_status === 'read') {
+            status.classList.add('is-read');
+            status.textContent = '✓✓';
+            status.title = 'Read';
+        } else if (message.wa_status === 'delivered') {
+            status.textContent = '✓✓';
+            status.title = 'Delivered';
+        } else {
+            status.textContent = '✓';
+            status.title = 'Sent';
+        }
+        row.querySelector('.bubble')?.appendChild(status);
+    }
+
+    function applyStatuses(statuses) {
+        if (!statuses.length) return;
+        const byId = new Map(statuses.map((status) => [String(status.id), status]));
+        state.messages.forEach((message) => {
+            const status = byId.get(String(message.id));
+            if (!status) return;
+            message.wa_status = status.wa_status;
+            message.wa_error = status.wa_error;
+            const row = el.chatMessages.querySelector(`.bubble-row[data-message-id="${cssEscape(String(message.id))}"]`);
+            if (row) updateBubbleStatusNode(row, message);
+        });
+    }
+
+    function cssEscape(value) {
+        return window.CSS && CSS.escape
+            ? CSS.escape(value)
+            : value.replace(/["\\]/g, '\\$&');
     }
 
     function copyIconSvg() {
         return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     }
 
-    async function copyToClipboard(text, btn) {
+    async function copyToClipboard(text, button) {
         try {
             await navigator.clipboard.writeText(text);
         } catch {
-            // Fallback for browsers/contexts without Clipboard API access.
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
             document.execCommand('copy');
-            ta.remove();
+            textarea.remove();
         }
-        btn.classList.add('is-copied');
-        const label = btn.querySelector('span');
+        const label = button.querySelector('span');
         const original = label.textContent;
+        button.classList.add('is-copied');
         label.textContent = 'Copied';
         setTimeout(() => {
-            btn.classList.remove('is-copied');
+            button.classList.remove('is-copied');
             label.textContent = original;
         }, 1500);
     }
 
+    function openLightbox(url) {
+        el.lightboxImage.src = url;
+        el.lightbox.hidden = false;
+        document.body.classList.add('is-lightbox-open');
+    }
+
+    function closeLightbox() {
+        el.lightbox.hidden = true;
+        el.lightboxImage.removeAttribute('src');
+        document.body.classList.remove('is-lightbox-open');
+    }
+
+    el.lightboxClose.addEventListener('click', closeLightbox);
+    el.lightbox.addEventListener('click', (event) => {
+        if (event.target === el.lightbox) closeLightbox();
+    });
+
     function scrollMessagesToBottom(smooth = false) {
         const target = el.chatMessages.scrollHeight;
-        // scrollTo with an options object isn't available everywhere
-        // (older Safari, some embedded webviews), so fall back to the
-        // always-supported scrollTop assignment.
         if (typeof el.chatMessages.scrollTo === 'function') {
             try {
                 el.chatMessages.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' });
@@ -454,167 +767,382 @@
     }
 
     el.chatMessages.addEventListener('scroll', () => {
-        const { scrollTop, scrollHeight, clientHeight } = el.chatMessages;
-        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-        el.scrollJumpBtn.hidden = distanceFromBottom < 200;
+        const distance = el.chatMessages.scrollHeight - el.chatMessages.scrollTop - el.chatMessages.clientHeight;
+        el.scrollJumpBtn.hidden = distance < 200;
     });
     el.scrollJumpBtn.addEventListener('click', () => scrollMessagesToBottom(true));
 
-    // Back to list (mobile)
-    /** Returns to the customer list on mobile. */
     function closeChat() {
         el.app.classList.remove('is-chat-open');
-        // Dismiss the on-screen keyboard if the composer had focus.
         el.composerInput.blur();
     }
-
     el.chatBackBtn.addEventListener('click', closeChat);
 
     // ------------------------------------------------------------------
-    // Composer — generate answer flow
+    // Reply window and composer
     // ------------------------------------------------------------------
 
-    /** Grows the composer with its content, up to the CSS max-height. */
+    function updateWindowState(customer) {
+        const inbound = customer?.last_inbound_at ? new Date(customer.last_inbound_at) : null;
+        const inboundAgeMs = inbound && !Number.isNaN(inbound.getTime())
+            ? Date.now() - inbound.getTime()
+            : Number.POSITIVE_INFINITY;
+        const remainingMs = inbound && !Number.isNaN(inbound.getTime())
+            ? inbound.getTime() + 24 * 60 * 60 * 1000 - Date.now()
+            : -1;
+        const hasWhatsApp = Boolean(customer?.wa_id);
+        state.windowOpen = hasWhatsApp && inboundAgeMs >= -5 * 60 * 1000 && remainingMs > 0;
+
+        el.chatWindowStatus.hidden = false;
+        el.chatWindowStatus.classList.toggle('is-open', state.windowOpen);
+        el.chatWindowStatus.classList.toggle('is-closed', !state.windowOpen);
+        if (!hasWhatsApp) {
+            el.chatWindowStatus.textContent = 'No WhatsApp';
+            el.windowNotice.textContent = 'Add a WhatsApp ID to this customer before sending.';
+            el.windowNotice.hidden = false;
+        } else if (state.windowOpen) {
+            const hours = Math.max(1, Math.ceil(remainingMs / (60 * 60 * 1000)));
+            el.chatWindowStatus.textContent = `Replies open · ${hours}h left`;
+            el.windowNotice.hidden = true;
+        } else {
+            el.chatWindowStatus.textContent = 'Reply window closed';
+            el.windowNotice.textContent = 'The 24-hour reply window has expired. An approved template is required.';
+            el.windowNotice.hidden = false;
+        }
+        syncComposerControls();
+    }
+
     function autoGrowComposer() {
         el.composerInput.style.height = 'auto';
         el.composerInput.style.height = Math.min(el.composerInput.scrollHeight, 148) + 'px';
     }
 
-    /** Send is enabled only when there's text and nothing already in flight. */
-    function syncSendButton() {
-        el.generateBtn.disabled = state.isSending || el.composerInput.value.trim() === '';
+    function hasSendableContent() {
+        if (state.attachment?.kind === 'location') return true;
+        if (state.attachment?.kind === 'file') return Boolean(state.attachment.media_ref);
+        return el.composerInput.value.trim() !== '';
+    }
+
+    function syncComposerControls() {
+        const busy = state.isSending || state.isDrafting;
+        el.sendBtn.disabled = busy || state.isUploading || !state.windowOpen || !hasSendableContent();
+        el.generateBtn.disabled = busy || !state.selectedSessionId;
+        el.attachBtn.disabled = state.isSending;
+        el.composerInput.disabled = state.isSending;
     }
 
     el.composerInput.addEventListener('input', () => {
         autoGrowComposer();
-        syncSendButton();
+        syncComposerControls();
     });
-
-    el.composerInput.addEventListener('keydown', (e) => {
-        // Cmd/Ctrl+Enter sends. Plain Enter inserts a newline, since support
-        // agents routinely paste multi-line customer messages here.
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            handleGenerateAnswer();
+    el.composerInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            handleSend();
         }
     });
-
     el.generateBtn.addEventListener('click', handleGenerateAnswer);
+    el.sendBtn.addEventListener('click', handleSend);
 
     async function handleGenerateAnswer() {
-        if (state.isSending) return;
+        if (state.isDrafting || state.isSending) return;
         if (!state.selectedSessionId) {
             toast('Select a customer first.', 'error');
             return;
         }
 
-        const message = el.composerInput.value.trim();
-        if (!message) {
-            toast('Type or paste the customer\'s message first.', 'error');
+        state.isDrafting = true;
+        el.generateBtn.classList.add('is-loading');
+        syncComposerControls();
+        const sessionId = state.selectedSessionId;
+        try {
+            const data = await api(API.draft, {
+                method: 'POST',
+                body: JSON.stringify({ session_id: sessionId }),
+            });
+            if (sessionId !== state.selectedSessionId) return;
+            el.composerInput.value = data.draft;
+            autoGrowComposer();
+            el.composerInput.focus();
+            toast('Draft ready to edit.');
+        } catch (error) {
+            toast(error.message, 'error');
+        } finally {
+            state.isDrafting = false;
+            el.generateBtn.classList.remove('is-loading');
+            syncComposerControls();
+        }
+    }
+
+    async function handleSend() {
+        if (state.isSending || state.isDrafting || state.isUploading) return;
+        if (!state.selectedSessionId || !state.selectedCustomer) {
+            toast('Select a customer first.', 'error');
+            return;
+        }
+        if (!state.windowOpen) {
+            toast('The WhatsApp reply window is closed.', 'error');
             return;
         }
 
+        const text = el.composerInput.value.trim();
+        const attachment = state.attachment;
+        if (!attachment && text === '') {
+            toast('Write a reply before sending.', 'error');
+            return;
+        }
+
+        const payload = {
+            session_id: state.selectedSessionId,
+            type: attachment?.type || 'text',
+            text,
+        };
+        if (attachment?.kind === 'file') {
+            payload.media_ref = attachment.media_ref;
+        } else if (attachment?.kind === 'location') {
+            payload.latitude = attachment.latitude;
+            payload.longitude = attachment.longitude;
+            payload.place_name = attachment.name;
+            payload.place_address = attachment.address;
+        }
+
+        const optimistic = {
+            id: `pending_${Date.now()}`,
+            type: 'ai',
+            direction: 'out',
+            msg_type: payload.type,
+            content: text,
+            pending: true,
+            wa_status: 'sending',
+        };
+        if (attachment?.kind === 'file') {
+            optimistic.media_url = attachment.localUrl;
+            optimistic.media_mime = attachment.mime;
+            optimistic.media_size = attachment.size;
+            optimistic.media_name = attachment.name;
+        } else if (attachment?.kind === 'location') {
+            optimistic.latitude = attachment.latitude;
+            optimistic.longitude = attachment.longitude;
+            optimistic.place_name = attachment.name;
+            optimistic.place_address = attachment.address;
+            optimistic.content = [attachment.name, attachment.address].filter(Boolean).join(' ');
+        }
+
         state.isSending = true;
-        el.generateBtn.disabled = true;
-        el.generateBtn.classList.add('is-loading');
-
-        const sessionId = state.selectedSessionId;
-
+        syncComposerControls();
+        const savedText = text;
+        const savedAttachment = attachment;
+        const sendingSessionId = state.selectedSessionId;
+        state.messages.push(optimistic);
+        el.chatMessages.querySelector('.chat__empty-state')?.remove();
+        el.chatMessages.appendChild(buildBubbleRow(optimistic));
+        scrollMessagesToBottom(true);
         el.composerInput.value = '';
         autoGrowComposer();
-
-        // Show the typed message immediately as a "pending" bubble purely
-        // client-side -- nothing is written to Supabase from the CRM. n8n
-        // is responsible for saving both the human and AI turns to
-        // n8n_chat_history once it receives the webhook call below.
-        state.messages.push({ id: 'pending', type: 'human', content: message, pending: true });
-        renderMessages({ scroll: true });
-        showTypingIndicator();
+        detachAttachmentForSend();
 
         try {
-            // Ask n8n to run the AI agent. n8n saves the human message and
-            // the AI reply to Supabase itself and responds once both are
-            // written.
-            await api(API.webhook, {
+            const data = await api(API.send, {
                 method: 'POST',
-                body: JSON.stringify({ session_id: sessionId, message }),
+                body: JSON.stringify(payload),
             });
-
-            hideTypingIndicator();
-
-            // Re-read history from Supabase (source of truth) -- this
-            // replaces the pending bubble with the real persisted rows and
-            // highlights whatever the newest AI turn turns out to be.
-            await refreshMessages(sessionId, { scroll: true, highlightLastAi: true });
-            refreshSidebarPreview(sessionId);
-        } catch (err) {
-            hideTypingIndicator();
-
-            // Nothing was persisted, so drop the pending bubble and give
-            // the customer's text back to the composer for a retry.
-            state.messages = state.messages.filter((m) => m.id !== 'pending');
-            renderMessages({ scroll: true });
-            el.composerInput.value = message;
+            if (sendingSessionId !== state.selectedSessionId) {
+                if (savedAttachment?.localUrl) URL.revokeObjectURL(savedAttachment.localUrl);
+                refreshSidebarFirstPage();
+                return;
+            }
+            const index = state.messages.findIndex((message) => message.id === optimistic.id);
+            if (index >= 0) state.messages[index] = data.message;
+            const pendingRow = el.chatMessages.querySelector(
+                `.bubble-row[data-message-id="${cssEscape(String(optimistic.id))}"]`
+            );
+            if (pendingRow) pendingRow.replaceWith(buildBubbleRow(data.message));
+            if (savedAttachment?.localUrl) URL.revokeObjectURL(savedAttachment.localUrl);
+            // WhatsApp locations have no caption field. Preserve any typed
+            // reply so it can be sent separately instead of silently dropping it.
+            if (savedAttachment?.kind === 'location' && savedText) {
+                el.composerInput.value = savedText;
+                autoGrowComposer();
+            }
+            refreshSidebarFirstPage();
+        } catch (error) {
+            if (sendingSessionId !== state.selectedSessionId) {
+                if (savedAttachment?.localUrl) URL.revokeObjectURL(savedAttachment.localUrl);
+                toast(error.message, 'error');
+                return;
+            }
+            state.messages = state.messages.filter((message) => message.id !== optimistic.id);
+            el.chatMessages.querySelector(
+                `.bubble-row[data-message-id="${cssEscape(String(optimistic.id))}"]`
+            )?.remove();
+            el.composerInput.value = savedText;
+            state.attachment = savedAttachment;
+            renderAttachmentPreview();
             autoGrowComposer();
-
-            toast(err.message, 'error');
+            toast(error.message, 'error');
         } finally {
             state.isSending = false;
-            el.generateBtn.classList.remove('is-loading');
-            syncSendButton();
-        }
-    }
-
-    function showTypingIndicator() {
-        hideTypingIndicator();
-        const row = document.createElement('div');
-        row.className = 'bubble-row bubble-row--ours';
-        row.id = 'typingRow';
-        row.innerHTML = '<div class="bubble bubble--customer typing"><span></span><span></span><span></span></div>';
-        el.chatMessages.appendChild(row);
-        scrollMessagesToBottom(true);
-    }
-
-    function hideTypingIndicator() {
-        document.getElementById('typingRow')?.remove();
-    }
-
-    async function refreshMessages(sessionId, { scroll = false, highlightLastAi = false } = {}) {
-        if (sessionId !== state.selectedSessionId) return;
-        const data = await api(`${API.messages}?session_id=${encodeURIComponent(sessionId)}`);
-        state.messages = data.messages;
-        renderMessages({ scroll, highlightLastAi });
-    }
-
-    async function refreshSidebarPreview(sessionId) {
-        try {
-            const data = await api(`${API.customers}?session_id=${encodeURIComponent(sessionId)}`);
-            // Move this customer to the top of the list, like WhatsApp does
-            // when a conversation gets new activity.
-            const idx = state.customers.findIndex((c) => c.session_id === sessionId);
-            const merged = { ...(idx !== -1 ? state.customers[idx] : {}), ...data.customer };
-            const lastMsg = state.messages[state.messages.length - 1];
-            if (lastMsg) {
-                merged.last_message = lastMsg.content;
-                merged.last_message_type = lastMsg.type;
-            }
-            if (idx !== -1) state.customers.splice(idx, 1);
-            state.customers.unshift(merged);
-
-            clearCustomerListDom();
-            renderCustomers(state.customers);
-            markSelectedInList(state.selectedSessionId);
-        } catch {
-            /* Non-critical — sidebar preview will catch up on next load. */
+            syncComposerControls();
         }
     }
 
     // ------------------------------------------------------------------
-    // New chat
+    // Attachments and location
+    // ------------------------------------------------------------------
+
+    el.attachBtn.addEventListener('click', () => {
+        el.attachMenu.hidden = !el.attachMenu.hidden;
+    });
+    el.chooseFileBtn.addEventListener('click', () => {
+        el.attachMenu.hidden = true;
+        el.attachInput.click();
+    });
+    el.chooseLocationBtn.addEventListener('click', () => {
+        el.attachMenu.hidden = true;
+        el.locationForm.hidden = false;
+        el.locationLatitude.focus();
+    });
+    el.cancelLocationBtn.addEventListener('click', () => {
+        el.locationForm.hidden = true;
+    });
+    el.applyLocationBtn.addEventListener('click', applyLocationAttachment);
+    el.removeAttachmentBtn.addEventListener('click', () => clearAttachment());
+    document.addEventListener('click', (event) => {
+        if (
+            !el.attachMenu.hidden
+            && !el.attachMenu.contains(event.target)
+            && !el.attachBtn.contains(event.target)
+        ) {
+            el.attachMenu.hidden = true;
+        }
+    });
+
+    el.attachInput.addEventListener('change', async () => {
+        const file = el.attachInput.files?.[0];
+        el.attachInput.value = '';
+        if (!file) return;
+
+        clearAttachment();
+        const sequence = ++state.uploadSequence;
+        const localUrl = file.type.startsWith('image/') || file.type.startsWith('video/')
+            ? URL.createObjectURL(file)
+            : null;
+        state.attachment = {
+            kind: 'file',
+            type: file.type.startsWith('image/') ? 'image' : (file.type.startsWith('video/') ? 'video' : 'document'),
+            media_ref: null,
+            name: file.name,
+            mime: file.type,
+            size: file.size,
+            localUrl,
+            uploading: true,
+        };
+        state.isUploading = true;
+        renderAttachmentPreview();
+        syncComposerControls();
+
+        try {
+            const form = new FormData();
+            form.append('file', file);
+            const data = await api(API.upload, { method: 'POST', body: form });
+            if (sequence !== state.uploadSequence || state.attachment === null) return;
+            state.attachment = {
+                ...state.attachment,
+                type: data.type,
+                media_ref: data.media_ref,
+                name: data.name,
+                mime: data.mime,
+                size: data.size,
+                uploading: false,
+            };
+            renderAttachmentPreview();
+        } catch (error) {
+            if (sequence === state.uploadSequence) clearAttachment();
+            toast(error.message, 'error');
+        } finally {
+            if (sequence === state.uploadSequence) state.isUploading = false;
+            syncComposerControls();
+        }
+    });
+
+    function applyLocationAttachment() {
+        const latitude = Number(el.locationLatitude.value);
+        const longitude = Number(el.locationLongitude.value);
+        if (
+            !Number.isFinite(latitude)
+            || !Number.isFinite(longitude)
+            || latitude < -90
+            || latitude > 90
+            || longitude < -180
+            || longitude > 180
+        ) {
+            toast('Enter a valid latitude and longitude.', 'error');
+            return;
+        }
+
+        clearAttachment();
+        state.attachment = {
+            kind: 'location',
+            type: 'location',
+            latitude,
+            longitude,
+            name: el.locationName.value.trim(),
+            address: el.locationAddress.value.trim(),
+        };
+        el.locationForm.hidden = true;
+        renderAttachmentPreview();
+        syncComposerControls();
+    }
+
+    function clearAttachment({ revoke = true } = {}) {
+        state.uploadSequence += 1;
+        if (revoke && state.attachment?.localUrl) {
+            URL.revokeObjectURL(state.attachment.localUrl);
+        }
+        state.attachment = null;
+        state.isUploading = false;
+        renderAttachmentPreview();
+        syncComposerControls();
+    }
+
+    function detachAttachmentForSend() {
+        state.attachment = null;
+        renderAttachmentPreview();
+    }
+
+    function renderAttachmentPreview() {
+        const attachment = state.attachment;
+        el.attachmentThumb.replaceChildren();
+        if (!attachment) {
+            el.attachmentPreview.hidden = true;
+            return;
+        }
+
+        el.attachmentPreview.hidden = false;
+        el.attachmentName.textContent = attachment.kind === 'location'
+            ? (attachment.name || 'Location')
+            : attachment.name;
+        el.attachmentMeta.textContent = attachment.kind === 'location'
+            ? `${attachment.latitude}, ${attachment.longitude}`
+            : (attachment.uploading ? 'Uploading…' : [attachment.type, formatBytes(attachment.size)].filter(Boolean).join(' · '));
+
+        if (attachment.type === 'image' && attachment.localUrl) {
+            const image = document.createElement('img');
+            image.alt = '';
+            image.src = attachment.localUrl;
+            el.attachmentThumb.appendChild(image);
+        } else {
+            el.attachmentThumb.textContent = attachment.type === 'video'
+                ? '🎥'
+                : (attachment.type === 'location' ? '📍' : '📄');
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // New chat and customer details
     // ------------------------------------------------------------------
 
     el.newChatBtn.addEventListener('click', createNewChat);
-
     async function createNewChat() {
         el.newChatBtn.disabled = true;
         try {
@@ -622,30 +1150,22 @@
                 method: 'POST',
                 body: JSON.stringify({}),
             });
-            const customer = data.customer;
-
-            state.customers.unshift(customer);
-            const node = buildCustomerItem(customer);
-            el.customerList.prepend(node);
-            el.customerListEmpty.hidden = true;
-
-            await selectCustomer(customer.session_id);
+            state.customers.unshift(data.customer);
+            renderCustomerList();
+            await selectCustomer(data.customer.session_id);
             openDetailsPanel();
             toast('New conversation started.');
-        } catch (err) {
-            toast(err.message, 'error');
+        } catch (error) {
+            toast(error.message, 'error');
         } finally {
             el.newChatBtn.disabled = false;
         }
     }
 
-    // ------------------------------------------------------------------
-    // Customer details panel
-    // ------------------------------------------------------------------
-
     const FORM_FIELDS = [
-        'first_name', 'last_name', 'username', 'phone',
-        'country', 'email', 'city', 'address', 'tax_id', 'details',
+        'first_name', 'last_name', 'username', 'phone', 'wa_id',
+        'wa_profile_name', 'country', 'email', 'city', 'address',
+        'tax_id', 'details',
     ];
 
     function openDetailsPanel() {
@@ -656,11 +1176,8 @@
         });
         document.getElementById('field_session_id').value = state.selectedCustomer.session_id;
         document.getElementById('field_session_id_display').textContent = state.selectedCustomer.session_id;
-
         el.panelOverlay.hidden = false;
-        requestAnimationFrame(() => {
-            el.detailsPanel.classList.add('is-open');
-        });
+        requestAnimationFrame(() => el.detailsPanel.classList.add('is-open'));
         el.detailsPanel.setAttribute('aria-hidden', 'false');
     }
 
@@ -674,9 +1191,8 @@
     el.chatDetailsBtn.addEventListener('click', openDetailsPanel);
     el.closeDetailsBtn.addEventListener('click', closeDetailsPanel);
     el.panelOverlay.addEventListener('click', closeDetailsPanel);
-
-    el.detailsForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
+    el.detailsForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
         const sessionId = document.getElementById('field_session_id').value;
         if (!sessionId) return;
 
@@ -684,24 +1200,21 @@
         FORM_FIELDS.forEach((field) => {
             payload[field] = document.getElementById(`field_${field}`).value.trim();
         });
-
         el.saveDetailsBtn.disabled = true;
         el.saveDetailsBtn.textContent = 'Saving…';
-
         try {
             const data = await api(`${API.customers}?session_id=${encodeURIComponent(sessionId)}`, {
                 method: 'PUT',
                 body: JSON.stringify(payload),
             });
-
             state.selectedCustomer = data.customer;
             applyCustomerToHeader(data.customer);
-            updateCustomerItemInList(data.customer);
-
+            updateWindowState(data.customer);
+            updateCustomerInState(data.customer);
             toast('Customer details saved.');
             closeDetailsPanel();
-        } catch (err) {
-            toast(err.message, 'error');
+        } catch (error) {
+            toast(error.message, 'error');
         } finally {
             el.saveDetailsBtn.disabled = false;
             el.saveDetailsBtn.textContent = 'Save changes';
@@ -709,14 +1222,23 @@
     });
 
     // ------------------------------------------------------------------
-    // Keyboard shortcuts
+    // Keyboard, gestures, viewport
     // ------------------------------------------------------------------
 
-    document.addEventListener('keydown', (e) => {
-        const typingInField = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+    document.addEventListener('keydown', (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'g') {
+            event.preventDefault();
+            handleGenerateAnswer();
+            return;
+        }
 
-        if (e.key === 'Escape') {
-            if (el.detailsPanel.classList.contains('is-open')) {
+        const typingInField = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+        if (event.key === 'Escape') {
+            if (!el.lightbox.hidden) {
+                closeLightbox();
+            } else if (!el.locationForm.hidden) {
+                el.locationForm.hidden = true;
+            } else if (el.detailsPanel.classList.contains('is-open')) {
                 closeDetailsPanel();
             } else if (el.app.classList.contains('is-chat-open') && !isDesktop()) {
                 closeChat();
@@ -725,47 +1247,38 @@
             }
             return;
         }
-
         if (typingInField) return;
 
-        if (e.key.toLowerCase() === 'n') {
-            e.preventDefault();
+        if (event.key.toLowerCase() === 'n') {
+            event.preventDefault();
             createNewChat();
-        } else if (e.key.toLowerCase() === 'i' && state.selectedSessionId) {
-            e.preventDefault();
+        } else if (event.key.toLowerCase() === 'i' && state.selectedSessionId) {
+            event.preventDefault();
             openDetailsPanel();
-        } else if (e.key === '/') {
-            e.preventDefault();
+        } else if (event.key === '/') {
+            event.preventDefault();
             el.searchInput.focus();
         }
     });
-
-    // ------------------------------------------------------------------
-    // Mobile gesture: edge-swipe right on an open chat to go back
-    // ------------------------------------------------------------------
 
     (() => {
         let startX = null;
         let startY = null;
         let tracking = false;
-
-        el.chat.addEventListener('touchstart', (e) => {
-            if (isDesktop() || e.touches.length !== 1) return;
-            startX = e.touches[0].clientX;
-            startY = e.touches[0].clientY;
-            // Only an edge swipe counts, so vertical scrolling and text
-            // selection inside the thread are never hijacked.
+        el.chat.addEventListener('touchstart', (event) => {
+            if (isDesktop() || event.touches.length !== 1) return;
+            startX = event.touches[0].clientX;
+            startY = event.touches[0].clientY;
             tracking = startX < 44;
         }, { passive: true });
-
-        el.chat.addEventListener('touchend', (e) => {
+        el.chat.addEventListener('touchend', (event) => {
             if (!tracking || startX === null || isDesktop()) {
                 tracking = false;
                 startX = null;
                 return;
             }
-            const dx = e.changedTouches[0].clientX - startX;
-            const dy = e.changedTouches[0].clientY - startY;
+            const dx = event.changedTouches[0].clientX - startX;
+            const dy = event.changedTouches[0].clientY - startY;
             if (dx > 70 && Math.abs(dy) < 55) closeChat();
             tracking = false;
             startX = null;
@@ -773,13 +1286,6 @@
         }, { passive: true });
     })();
 
-    // ------------------------------------------------------------------
-    // Viewport changes
-    // ------------------------------------------------------------------
-
-    // Crossing the breakpoint mid-session shouldn't leave the app in a
-    // half-applied state (e.g. desktop showing the placeholder while a
-    // conversation is loaded).
     function handleBreakpointChange(matches) {
         if (!matches) return;
         const hasConversation = Boolean(state.selectedSessionId);
@@ -788,14 +1294,12 @@
     }
 
     if (typeof window.matchMedia === 'function') {
-        const mq = window.matchMedia(DESKTOP_QUERY);
-        const onChange = (e) => handleBreakpointChange(e.matches);
-        // addEventListener is the modern API; addListener keeps this working
-        // on older iOS Safari.
-        if (typeof mq.addEventListener === 'function') {
-            mq.addEventListener('change', onChange);
-        } else if (typeof mq.addListener === 'function') {
-            mq.addListener(onChange);
+        const query = window.matchMedia(DESKTOP_QUERY);
+        const onChange = (event) => handleBreakpointChange(event.matches);
+        if (typeof query.addEventListener === 'function') {
+            query.addEventListener('change', onChange);
+        } else if (typeof query.addListener === 'function') {
+            query.addListener(onChange);
         }
     }
 
@@ -803,6 +1307,7 @@
     // Boot
     // ------------------------------------------------------------------
 
-    syncSendButton();
+    syncComposerControls();
     loadCustomers({ reset: true });
+    startPolling();
 })();

@@ -4,6 +4,9 @@
  */
 declare(strict_types=1);
 
+require_once __DIR__ . '/config/auth.php';
+require_auth();
+
 /**
  * Appends the file's last-modified time to an asset URL so browsers pick up
  * changes immediately after an upload instead of serving a stale cached copy.

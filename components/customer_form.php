@@ -1,3 +1,4 @@
+<?php declare(strict_types=1); ?>
 <!-- components/customer_form.php -->
 <div class="panel-overlay" id="panelOverlay" hidden></div>
 
@@ -36,6 +37,17 @@
             <div class="field">
                 <label for="field_email">Email</label>
                 <input type="email" id="field_email" name="email" autocomplete="off" />
+            </div>
+        </div>
+
+        <div class="details-form__row details-form__row--2">
+            <div class="field">
+                <label for="field_wa_id">WhatsApp ID</label>
+                <input type="tel" id="field_wa_id" name="wa_id" inputmode="numeric" autocomplete="off" />
+            </div>
+            <div class="field">
+                <label for="field_wa_profile_name">WhatsApp profile</label>
+                <input type="text" id="field_wa_profile_name" name="wa_profile_name" autocomplete="off" />
             </div>
         </div>
 

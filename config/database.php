@@ -111,6 +111,29 @@ final class Supabase
     }
 
     /**
+     * Race-free PostgREST upsert using a named unique-conflict column.
+     *
+     * @param array<string, mixed> $data
+     * @return array<int, array<string, mixed>>
+     */
+    public function upsert(string $path, array $data, string $onConflict): array
+    {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $onConflict)) {
+            throw new InvalidArgumentException('Invalid upsert conflict column.');
+        }
+
+        [$body] = $this->request(
+            'POST',
+            $path,
+            ['on_conflict' => $onConflict],
+            $data,
+            ['Prefer: resolution=merge-duplicates,return=representation']
+        );
+
+        return is_array($body) ? $body : [];
+    }
+
+    /**
      * PATCH (update), filtered by PostgREST query params.
      *
      * @param array<string, string> $query
@@ -186,7 +209,13 @@ final class Supabase
 
         if ($status >= 400) {
             error_log("[Supabase] {$method} {$path} -> HTTP {$status}: {$rawBody}");
-            $this->fail('The database rejected the request. Please try again.', $status >= 500 ? 502 : 400);
+            // Preserve conflicts so callers can distinguish retry dedup from
+            // validation failures. Upstream 5xx responses remain a gateway
+            // error because the browser cannot recover from Supabase internals.
+            $this->fail(
+                'The database rejected the request. Please try again.',
+                $status >= 500 ? 502 : max(400, $status)
+            );
         }
 
         $decoded = $rawBody !== '' ? json_decode($rawBody, true) : [];

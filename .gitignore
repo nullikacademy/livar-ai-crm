@@ -1,6 +1,7 @@
-# Local configuration — holds the Supabase service_role secret key.
+# Local configuration — holds Supabase, login, n8n, and 360dialog secrets.
 # Never commit this: copy config/config.example.php to config/config.php instead.
 /config/config.php
+/storage/media/
 
 # PHP / server
 error_log
