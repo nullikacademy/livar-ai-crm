@@ -46,9 +46,7 @@ const SUPABASE_SERVICE_KEY = 'REPLACE_WITH_YOUR_SERVICE_ROLE_KEY';
 // ------------------------------------------------------------------
 
 /**
- * The webhook that runs the AI agent. This n8n workflow is responsible
- * for saving BOTH the human message and the AI reply into
- * n8n_chat_history -- the CRM only reads that table.
+ * The webhook that runs the stateless AI draft generator.
  */
 const N8N_WEBHOOK_URL = 'https://your-n8n-host.example.com/webhook/your-webhook-uuid';
 
@@ -59,8 +57,17 @@ const N8N_WEBHOOK_URL = 'https://your-n8n-host.example.com/webhook/your-webhook-
 const N8N_TIMEOUT_SECONDS = 45;
 
 // ------------------------------------------------------------------
-// 3. Interface
+// 3. Authentication and 360dialog WhatsApp
+// ------------------------------------------------------------------
+const CRM_PASSWORD_HASH = 'REPLACE_WITH_PASSWORD_HASH';
+const D360_API_KEY = 'REPLACE_WITH_360DIALOG_API_KEY';
+const WHATSAPP_WEBHOOK_TOKEN = 'REPLACE_WITH_A_LONG_RANDOM_TOKEN';
+const WHATSAPP_MAX_MEDIA_BYTES = 16777216;
+
+// ------------------------------------------------------------------
+// 4. Interface
 // ------------------------------------------------------------------
 
 /** How many customers to load per page in the sidebar (infinite scroll). */
 const CUSTOMERS_PAGE_SIZE = 30;
+

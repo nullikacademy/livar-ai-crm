@@ -31,16 +31,17 @@ template stays placeholders-only.
 - **All data access lives in `config/db_functions.php`**, one function per
   operation. Routes in `/api` include that file; they never call
   `Supabase::client()` directly.
-- **n8n is the only writer to `n8n_chat_history`.** The CRM only reads it.
-  `api/webhook.php` forwards `{ session_id, message }` to n8n and waits;
-  the frontend then re-fetches `api/messages.php`, so **Supabase is always
-  the source of truth**. Never make the CRM insert chat rows, and never
-  render n8n's response body as the actual reply.
+- **The CRM is the only writer to `n8n_chat_history`.** n8n is a stateless draft generator: it receives conversation history, returns text, and touches no table.
+  `api/webhook.php` forwards explicit `{ session_id, history, customer }`
+  context and returns a draft for the composer. Only a successful inbound
+  webhook or outbound send inserts a chat row; **Supabase is always the
+  source of truth**.
 - **Errors:** log the real cause with `error_log('[Supabase] ...')` and
   return a generic message to the browser via `json_error()`. Don't leak
   internals in responses.
 - **Schema changes** go in `sql/schema.sql`, which must stay safe to
-  re-run (`create ... if not exists`, `create or replace function`).
+  re-run (`create ... if not exists`; drop/recreate functions whose return
+  tables change).
 
 ## Conventions
 
@@ -60,3 +61,4 @@ page manually:
 php -l path/to/file.php
 php -S localhost:8000   # then open http://localhost:8000
 ```
+

@@ -16,6 +16,7 @@
         customers: 'api/customers.php',
         messages: 'api/messages.php',
         webhook: 'api/webhook.php',
+        send: 'api/send.php', upload: 'api/upload.php',
     };
 
     const PAGE_SIZE = 30;
@@ -45,6 +46,7 @@
         scrollJumpBtn: document.getElementById('scrollJumpBtn'),
         composerInput: document.getElementById('composerInput'),
         generateBtn: document.getElementById('generateBtn'),
+        sendBtn: document.getElementById('sendBtn'), attachBtn: document.getElementById('attachBtn'), locationBtn: document.getElementById('locationBtn'), attachInput: document.getElementById('attachInput'), attachmentChip: document.getElementById('attachmentChip'), windowNotice: document.getElementById('windowNotice'), windowStatus: document.getElementById('windowStatus'),
         // Details panel
         panelOverlay: document.getElementById('panelOverlay'),
         detailsPanel: document.getElementById('detailsPanel'),
@@ -69,6 +71,7 @@
         selectedCustomer: null,
         messages: [],
         isSending: false,
+        mediaRef: null, pendingLocation: null, pollTimer: null, sidebarTimer: null, pollCount: 0,
     };
 
     // ------------------------------------------------------------------
@@ -129,8 +132,9 @@
     }
 
     async function api(url, options = {}) {
+        const isForm = options.body instanceof FormData;
         const res = await fetch(url, {
-            headers: { 'Content-Type': 'application/json' },
+            headers: isForm ? {} : { 'Content-Type': 'application/json' },
             ...options,
         });
         let data;
@@ -318,6 +322,7 @@
 
             state.messages = messagesData.messages;
             renderMessages({ scroll: true });
+            updateWindowState(); startPolling();
 
             // Only steal focus on pointer/desktop -- auto-focusing on a
             // phone pops the keyboard over the conversation you just opened.
@@ -342,6 +347,7 @@
         el.chatAvatar.textContent = initials(customer);
         el.chatCustomerName.textContent = fullName(customer);
         el.chatCustomerPhone.textContent = customer.phone || customer.email || 'No phone on file';
+        updateWindowState();
     }
 
     function clearMessageBubbles() {
@@ -379,18 +385,25 @@
     }
 
     function buildBubbleRow(msg) {
-        const isOurs = msg.type === 'ai';
+        const isOurs = msg.direction ? msg.direction === 'out' : msg.type === 'ai';
         const row = document.createElement('div');
         row.className = `bubble-row ${isOurs ? 'bubble-row--ours' : 'bubble-row--customer'}`;
+        row.dataset.messageId = msg.id;
 
         const bubble = document.createElement('div');
         bubble.className = `bubble ${isOurs ? 'bubble--ours' : 'bubble--customer'}`;
         if (msg.pending) bubble.classList.add('is-pending');
 
-        const text = document.createElement('div');
-        text.className = 'bubble__text';
-        text.textContent = msg.content;
-        bubble.appendChild(text);
+        const type=msg.msg_type||'text';
+        if(type==='image'){bubble.classList.add('bubble--media');const n=document.createElement('img');n.className='bubble__image';n.loading='lazy';n.src=msg.media_url;n.addEventListener('click',()=>openLightbox(msg.media_url));bubble.appendChild(n);}
+        else if(type==='video'){bubble.classList.add('bubble--media');const n=document.createElement('video');n.className='bubble__video';n.controls=true;n.preload='metadata';n.src=msg.media_url;bubble.appendChild(n);}
+        else if(type==='audio'){const n=document.createElement('audio');n.className='bubble__audio';n.controls=true;n.src=msg.media_url;bubble.appendChild(n);}
+        else if(type==='document'){const a=document.createElement('a');a.className='bubble__doc';a.href=msg.media_url;a.textContent='📄 '+(msg.media_name||'Document');bubble.appendChild(a);}
+        else if(type==='location'){const a=document.createElement('a');a.className='bubble__location';a.href=`https://www.google.com/maps?q=${encodeURIComponent(msg.latitude)},${encodeURIComponent(msg.longitude)}`;a.target='_blank';a.rel='noopener noreferrer';a.textContent='📍 '+(msg.place_name||msg.place_address||'Location');bubble.appendChild(a);}
+        else if(type==='unsupported'||type==='sticker'){const n=document.createElement('div');n.className='bubble__text';n.textContent='Unsupported message type';bubble.appendChild(n);}
+        else bubble.appendChild(linkifiedText(msg.content));
+        if(msg.content&&type!=='text'){const cap=document.createElement('div');cap.className='bubble__caption';cap.textContent=msg.content;bubble.appendChild(cap);}
+        if(isOurs&&msg.wa_status){const s=document.createElement('div');s.className='bubble__status';s.textContent=msg.wa_status==='failed'?'Failed':(msg.wa_status==='read'?'✓✓':msg.wa_status==='delivered'?'✓✓':'✓');bubble.appendChild(s);}
 
         if (isOurs) {
             const actions = document.createElement('div');
@@ -407,6 +420,10 @@
         row.appendChild(bubble);
         return row;
     }
+
+    function linkifiedText(value){const wrap=document.createElement('div');wrap.className='bubble__text';const re=/https?:\/\/[^\s]+/g;let i=0;for(const m of String(value||'').matchAll(re)){wrap.append(document.createTextNode(value.slice(i,m.index)));const a=document.createElement('a');a.href=m[0];a.textContent=m[0];a.target='_blank';a.rel='noopener noreferrer';wrap.append(a);i=m.index+m[0].length;}wrap.append(document.createTextNode(String(value||'').slice(i)));return wrap;}
+    function openLightbox(url){const b=document.createElement('div');b.className='lightbox';const img=document.createElement('img');img.src=url;b.appendChild(img);b.addEventListener('click',()=>b.remove());document.body.appendChild(b);}
+    function appendMessages(items){if(!items.length)return;el.chatMessages.querySelector('.chat__empty-state')?.remove();const f=document.createDocumentFragment();items.forEach(m=>f.appendChild(buildBubbleRow(m)));el.chatMessages.appendChild(f);state.messages.push(...items);scrollMessagesToBottom();}
 
     function copyIconSvg() {
         return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
@@ -482,7 +499,7 @@
 
     /** Send is enabled only when there's text and nothing already in flight. */
     function syncSendButton() {
-        el.generateBtn.disabled = state.isSending || el.composerInput.value.trim() === '';
+        el.generateBtn.disabled = state.isSending; el.sendBtn.disabled = state.isSending || (!el.composerInput.value.trim() && !state.mediaRef && !state.pendingLocation) || !withinWindow();
     }
 
     el.composerInput.addEventListener('input', () => {
@@ -495,22 +512,18 @@
         // agents routinely paste multi-line customer messages here.
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            handleGenerateAnswer();
+            handleSend();
+        } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'g') { e.preventDefault(); handleGenerateAnswer();
         }
     });
 
     el.generateBtn.addEventListener('click', handleGenerateAnswer);
+    el.sendBtn.addEventListener('click',handleSend);
 
     async function handleGenerateAnswer() {
         if (state.isSending) return;
         if (!state.selectedSessionId) {
             toast('Select a customer first.', 'error');
-            return;
-        }
-
-        const message = el.composerInput.value.trim();
-        if (!message) {
-            toast('Type or paste the customer\'s message first.', 'error');
             return;
         }
 
@@ -520,43 +533,23 @@
 
         const sessionId = state.selectedSessionId;
 
-        el.composerInput.value = '';
-        autoGrowComposer();
-
-        // Show the typed message immediately as a "pending" bubble purely
-        // client-side -- nothing is written to Supabase from the CRM. n8n
-        // is responsible for saving both the human and AI turns to
-        // n8n_chat_history once it receives the webhook call below.
-        state.messages.push({ id: 'pending', type: 'human', content: message, pending: true });
-        renderMessages({ scroll: true });
         showTypingIndicator();
 
         try {
             // Ask n8n to run the AI agent. n8n saves the human message and
             // the AI reply to Supabase itself and responds once both are
             // written.
-            await api(API.webhook, {
+            const result=await api(API.webhook, {
                 method: 'POST',
-                body: JSON.stringify({ session_id: sessionId, message }),
+                body: JSON.stringify({ session_id: sessionId, history: state.messages.filter(m=>!m.pending).map(m=>({role:(m.direction==='out'||m.type==='ai')?'assistant':'user',content:m.content})), customer: state.selectedCustomer }),
             });
-
             hideTypingIndicator();
-
-            // Re-read history from Supabase (source of truth) -- this
-            // replaces the pending bubble with the real persisted rows and
-            // highlights whatever the newest AI turn turns out to be.
-            await refreshMessages(sessionId, { scroll: true, highlightLastAi: true });
-            refreshSidebarPreview(sessionId);
+            el.composerInput.value=result.draft;autoGrowComposer();el.composerInput.focus();
         } catch (err) {
             hideTypingIndicator();
 
             // Nothing was persisted, so drop the pending bubble and give
             // the customer's text back to the composer for a retry.
-            state.messages = state.messages.filter((m) => m.id !== 'pending');
-            renderMessages({ scroll: true });
-            el.composerInput.value = message;
-            autoGrowComposer();
-
             toast(err.message, 'error');
         } finally {
             state.isSending = false;
@@ -564,6 +557,15 @@
             syncSendButton();
         }
     }
+
+    async function handleSend(){if(state.isSending||!state.selectedSessionId)return;const text=el.composerInput.value.trim();const loc=state.pendingLocation;const type=loc?'location':state.mediaRef?'document':'text';state.isSending=true;const pending={id:'pending-'+Date.now(),type:'ai',direction:'out',msg_type:type,content:text,pending:true,...loc};appendMessages([pending]);el.composerInput.value='';try{const r=await api(API.send,{method:'POST',body:JSON.stringify({session_id:state.selectedSessionId,type,text,media_ref:state.mediaRef,...loc})});state.messages=state.messages.filter(m=>m.id!==pending.id);el.chatMessages.querySelector(`[data-message-id="${pending.id}"]`)?.remove();appendMessages([r.message]);state.mediaRef=null;state.pendingLocation=null;el.attachmentChip.hidden=true;refreshSidebarPreview(state.selectedSessionId);}catch(err){state.messages=state.messages.filter(m=>m.id!==pending.id);el.chatMessages.querySelector(`[data-message-id="${pending.id}"]`)?.remove();el.composerInput.value=text;toast(err.message,'error');}finally{state.isSending=false;syncSendButton();}}
+    el.attachBtn.addEventListener('click',()=>el.attachInput.click());el.attachInput.addEventListener('change',async()=>{const file=el.attachInput.files[0];if(!file)return;const fd=new FormData();fd.append('file',file);try{const r=await api(API.upload,{method:'POST',body:fd});state.mediaRef=r.media_ref;el.attachmentChip.textContent=file.name+' ×';el.attachmentChip.hidden=false;el.attachmentChip.onclick=()=>{state.mediaRef=null;el.attachmentChip.hidden=true;syncSendButton();};syncSendButton();}catch(e){toast(e.message,'error');}});
+    el.locationBtn.addEventListener('click',()=>{const raw=prompt('Latitude, longitude (for example: 35.6892, 51.3890)');if(!raw)return;const parts=raw.split(',').map(Number);if(parts.length!==2||!Number.isFinite(parts[0])||!Number.isFinite(parts[1])||Math.abs(parts[0])>90||Math.abs(parts[1])>180){toast('Enter a valid latitude and longitude.','error');return;}const name=prompt('Location label (optional)')||'';state.pendingLocation={latitude:parts[0],longitude:parts[1],place_name:name,place_address:''};state.mediaRef=null;el.attachmentChip.textContent='📍 '+(name||raw)+' ×';el.attachmentChip.hidden=false;el.attachmentChip.onclick=()=>{state.pendingLocation=null;el.attachmentChip.hidden=true;syncSendButton();};syncSendButton();});
+    function withinWindow(){const at=state.selectedCustomer?.last_inbound_at;if(!at)return false;return Date.now()-new Date(at).getTime()<86400000;}
+    function updateWindowState(){if(!state.selectedCustomer)return;const open=withinWindow();const left=Math.max(0,24-Math.floor((Date.now()-new Date(state.selectedCustomer.last_inbound_at).getTime())/3600000));el.windowStatus.textContent=open?`replies open · ${left}h left`:'reply window closed';el.windowStatus.classList.toggle('is-closed',!open);el.windowNotice.hidden=open;el.windowNotice.textContent=open?'':'The 24-hour reply window has expired. An approved template is required.';syncSendButton();}
+    function startPolling(){clearInterval(state.pollTimer);clearInterval(state.sidebarTimer);state.pollTimer=setInterval(pollMessages,8000);state.sidebarTimer=setInterval(()=>{if(!document.hidden)loadCustomers({reset:true});},25000);}
+    async function pollMessages(){if(document.hidden||!state.selectedSessionId)return;const max=state.messages.reduce((n,m)=>Math.max(n,Number(m.id)||0),0);try{const d=await api(`${API.messages}?session_id=${encodeURIComponent(state.selectedSessionId)}&since_id=${max}`);appendMessages(d.messages);if(++state.pollCount%3===0){const all=await api(`${API.messages}?session_id=${encodeURIComponent(state.selectedSessionId)}&limit=200`);all.messages.forEach(fresh=>{const old=state.messages.find(m=>m.id===fresh.id);if(old&&old.wa_status!==fresh.wa_status){old.wa_status=fresh.wa_status;const s=el.chatMessages.querySelector(`[data-message-id="${fresh.id}"] .bubble__status`);if(s)s.textContent=fresh.wa_status==='failed'?'Failed':fresh.wa_status==='read'?'✓✓':fresh.wa_status==='delivered'?'✓✓':'✓';}});}const c=await api(`${API.customers}?session_id=${encodeURIComponent(state.selectedSessionId)}`);state.selectedCustomer=c.customer;updateWindowState();}catch(e){console.warn(e);}}
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden){pollMessages();loadCustomers({reset:true});}});
 
     function showTypingIndicator() {
         hideTypingIndicator();
@@ -806,3 +808,4 @@
     syncSendButton();
     loadCustomers({ reset: true });
 })();
+
