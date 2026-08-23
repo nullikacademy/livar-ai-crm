@@ -1038,6 +1038,215 @@
     // Staged attachment
     // ------------------------------------------------------------------
 
+    /**
+     * The attach button opens a small menu: a file, or a location.
+     * A location is not a file, so it cannot share the file picker.
+     */
+    el.attachBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (document.getElementById('attachMenu')) {
+            closeAttachMenu();
+            return;
+        }
+        openAttachMenu();
+    });
+
+    function openAttachMenu() {
+        const menu = document.createElement('div');
+        menu.className = 'attach-menu';
+        menu.id = 'attachMenu';
+
+        const fileItem = document.createElement('button');
+        fileItem.type = 'button';
+        fileItem.className = 'attach-menu__item';
+        fileItem.innerHTML = paperclipIconSvg() + '<span>Photo, video or file</span>';
+        fileItem.addEventListener('click', () => {
+            closeAttachMenu();
+            el.attachInput.click();
+        });
+
+        const locItem = document.createElement('button');
+        locItem.type = 'button';
+        locItem.className = 'attach-menu__item';
+        locItem.innerHTML = pinIconSvg() + '<span>Send location</span>';
+        locItem.addEventListener('click', () => {
+            closeAttachMenu();
+            openLocationDialog();
+        });
+
+        menu.append(fileItem, locItem);
+        document.body.appendChild(menu);
+
+        // Anchored above the button, clamped to the viewport.
+        const rect = el.attachBtn.getBoundingClientRect();
+        menu.style.left = `${Math.max(8, rect.left)}px`;
+        menu.style.top = `${Math.max(8, rect.top - menu.offsetHeight - 8)}px`;
+
+        setTimeout(() => document.addEventListener('click', closeAttachMenu, { once: true }), 0);
+    }
+
+    function closeAttachMenu() {
+        document.getElementById('attachMenu')?.remove();
+    }
+
+    el.attachInput.addEventListener('change', async () => {
+        const file = el.attachInput.files?.[0];
+        // Reset immediately so picking the same file twice still fires.
+        el.attachInput.value = '';
+        if (!file) return;
+        await stageAttachment(file);
+    });
+
+    /**
+     * Uploads a file to api/upload.php and shows it as a chip.
+     *
+     * The file only reaches WhatsApp when Send is pressed, so an agent
+     * who picks the wrong one can just remove the chip.
+     */
+    async function stageAttachment(file) {
+        clearAttachment();
+
+        el.attachBtn.disabled = true;
+        el.attachChip.hidden = false;
+        el.attachChipName.textContent = file.name;
+        el.attachChipMeta.textContent = 'Uploading…';
+
+        try {
+            const body = new FormData();
+            body.append('file', file);
+            // Let the browser set the multipart boundary; api() would
+            // otherwise force application/json.
+            const res = await fetch(API.upload, { method: 'POST', body });
+            const data = await res.json();
+            if (!res.ok || data.success === false) {
+                throw new Error(data.error || 'That file could not be attached.');
+            }
+
+            const previewUrl = data.msg_type === 'image' ? URL.createObjectURL(file) : null;
+
+            state.attachment = {
+                ref: data.media_ref,
+                name: data.name,
+                mime: data.mime,
+                size: data.size,
+                msgType: data.msg_type,
+                previewUrl,
+            };
+
+            el.attachChipName.textContent = data.name;
+            el.attachChipMeta.textContent = `${data.msg_type} · ${formatBytes(data.size)}`;
+            el.attachChipIcon.innerHTML = '';
+            if (previewUrl) {
+                const thumb = document.createElement('img');
+                thumb.src = previewUrl;
+                thumb.alt = '';
+                el.attachChipIcon.appendChild(thumb);
+            } else {
+                el.attachChipIcon.innerHTML = docIconSvg();
+            }
+        } catch (err) {
+            clearAttachment();
+            toast(err.message, 'error');
+        } finally {
+            syncSendButton();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Send location
+    // ------------------------------------------------------------------
+
+    function openLocationDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'location-dialog';
+        overlay.id = 'locationDialog';
+        overlay.innerHTML = `
+            <form class="location-dialog__card" id="locationForm">
+                <h3>Send a location</h3>
+                <div class="location-dialog__row">
+                    <div class="field">
+                        <label for="locLat">Latitude</label>
+                        <input type="text" id="locLat" inputmode="decimal" placeholder="41.38740" required />
+                    </div>
+                    <div class="field">
+                        <label for="locLng">Longitude</label>
+                        <input type="text" id="locLng" inputmode="decimal" placeholder="2.16860" required />
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="locName">Label (optional)</label>
+                    <input type="text" id="locName" placeholder="LiVAR warehouse" />
+                </div>
+                <div class="field">
+                    <label for="locAddress">Address (optional)</label>
+                    <input type="text" id="locAddress" placeholder="Carrer de Mallorca 1, Barcelona" />
+                </div>
+                <div class="location-dialog__actions">
+                    <button type="button" class="btn btn--ghost" id="locCancel">Cancel</button>
+                    <button type="submit" class="btn btn--primary" id="locSend">Send location</button>
+                </div>
+            </form>
+        `;
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) closeLocationDialog();
+        });
+        document.body.appendChild(overlay);
+        document.getElementById('locCancel').addEventListener('click', closeLocationDialog);
+        document.getElementById('locationForm').addEventListener('submit', submitLocation);
+        document.getElementById('locLat').focus();
+    }
+
+    function closeLocationDialog() {
+        document.getElementById('locationDialog')?.remove();
+    }
+
+    async function submitLocation(e) {
+        e.preventDefault();
+
+        const lat = parseFloat(document.getElementById('locLat').value.replace(',', '.'));
+        const lng = parseFloat(document.getElementById('locLng').value.replace(',', '.'));
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+            toast('Those coordinates are not on the map.', 'error');
+            return;
+        }
+
+        const placeName = document.getElementById('locName').value.trim();
+        const placeAddress = document.getElementById('locAddress').value.trim();
+        const sessionId = state.selectedSessionId;
+        const btn = document.getElementById('locSend');
+
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+
+        try {
+            const data = await api(API.send, {
+                method: 'POST',
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    type: 'location',
+                    latitude: lat,
+                    longitude: lng,
+                    place_name: placeName,
+                    place_address: placeAddress,
+                }),
+            });
+
+            closeLocationDialog();
+            appendMessages([data.message]);
+            refreshSidebarPreview(sessionId);
+        } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Send location';
+            toast(err.message, 'error');
+        }
+    }
+
+    function paperclipIconSvg() {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+    }
+
     /** Drops the staged file and hides its chip. */
     function clearAttachment() {
         if (state.attachment?.previewUrl?.startsWith('blob:')) {
@@ -1368,7 +1577,11 @@
         const typingInField = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 
         if (e.key === 'Escape') {
-            if (document.getElementById('lightbox')) {
+            if (document.getElementById('locationDialog')) {
+                closeLocationDialog();
+            } else if (document.getElementById('attachMenu')) {
+                closeAttachMenu();
+            } else if (document.getElementById('lightbox')) {
                 closeLightbox();
             } else if (el.detailsPanel.classList.contains('is-open')) {
                 closeDetailsPanel();
