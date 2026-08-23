@@ -2,14 +2,13 @@
 /**
  * api/messages.php
  *
- *   GET /api/messages.php?session_id=xxx   -> full chat history
+ *   GET /api/messages.php?session_id=xxx                 -> recent history
+ *   GET /api/messages.php?session_id=xxx&since_id=123    -> only newer rows
  *
- * Writing messages is intentionally NOT done here. The n8n workflow
- * behind api/webhook.php saves both the human message and the AI reply
- * to n8n_chat_history itself (see README "n8n workflow" section), so
- * the CRM only ever reads this table -- it never writes to it directly.
- * This keeps Supabase as the single source of truth with exactly one
- * writer for chat history.
+ * Reads only. Inbound messages are written by api/whatsapp_webhook.php
+ * and outbound ones by api/send.php; the frontend polls this endpoint
+ * with `since_id` so a conversation picks up new rows without re-fetching
+ * (and re-rendering) everything it already has.
  */
 
 declare(strict_types=1);
@@ -30,9 +29,12 @@ try {
         json_error('session_id is required', 422);
     }
 
+    $sinceId = isset($_GET['since_id']) ? max(0, (int) $_GET['since_id']) : 0;
+    $limit   = isset($_GET['limit']) ? max(1, min(500, (int) $_GET['limit'])) : 200;
+
     json_response([
         'success'  => true,
-        'messages' => getMessages($sessionId),
+        'messages' => getMessages($sessionId, $sinceId, $limit),
     ]);
 } catch (SupabaseException $e) {
     error_log('[api/messages] ' . $e->getMessage());

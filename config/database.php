@@ -111,6 +111,41 @@ final class Supabase
     }
 
     /**
+     * POST with ON CONFLICT (upsert), resolving on $onConflict.
+     *
+     * Needed for the race-free get-or-create the inbound webhook does on
+     * `wa_id`: two simultaneous deliveries from a brand-new number would
+     * otherwise both pass a check-then-insert and the loser would surface
+     * as a 409, which request() flattens into a generic 400 -- impossible
+     * to tell apart from a validation error.
+     *
+     * $onConflict must name a column covered by a NON-partial unique
+     * index; Postgres cannot infer a partial one (see sql/schema.sql).
+     *
+     * With $ignoreDuplicates the conflicting row is left untouched and
+     * the response is an empty array, which is how insertWhatsAppMessage()
+     * detects a webhook retry. Otherwise the row is merged (updated) with
+     * the payload and returned.
+     *
+     * @param array<string, mixed> $data
+     * @return array<int, array<string, mixed>>
+     */
+    public function upsert(string $path, array $data, string $onConflict, bool $ignoreDuplicates = false): array
+    {
+        $resolution = $ignoreDuplicates ? 'ignore-duplicates' : 'merge-duplicates';
+
+        [$body] = $this->request(
+            'POST',
+            $path,
+            ['on_conflict' => $onConflict],
+            $data,
+            ['Prefer: resolution=' . $resolution . ',return=representation']
+        );
+
+        return is_array($body) ? $body : [];
+    }
+
+    /**
      * PATCH (update), filtered by PostgREST query params.
      *
      * @param array<string, string> $query
