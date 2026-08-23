@@ -27,6 +27,7 @@
             <button class="btn btn--icon btn--ghost" id="chatDetailsBtn" title="Customer details (I)">
                 <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg>
             </button>
+            <span class="window-status" id="windowStatus"></span>
         </header>
 
         <div class="chat__messages" id="chatMessages">
@@ -42,18 +43,22 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
         </div>
 
+        <div class="window-notice" id="windowNotice" hidden></div>
+        <div class="attachment-chip" id="attachmentChip" hidden></div>
         <footer class="composer">
+            <button class="btn btn--icon btn--ghost" id="attachBtn" title="Attach file">＋</button>
+            <button class="btn btn--icon btn--ghost" id="locationBtn" title="Send location">⌖</button>
+            <input type="file" id="attachInput" hidden accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf,text/plain">
             <textarea
                 id="composerInput"
                 class="composer__input"
-                placeholder="Type or paste the customer's message…"
+                placeholder="Write your reply…"
                 rows="1"
                 maxlength="4000"
             ></textarea>
-            <button class="btn btn--primary composer__send" id="generateBtn" title="Generate answer (⌘/Ctrl + Enter)">
-                <span class="composer__send-label">Generate Answer</span>
-                <svg class="composer__send-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-            </button>
+            <button class="btn btn--secondary" id="generateBtn" title="Draft (⌘/Ctrl + G)">✨ Draft</button>
+            <button class="btn btn--primary composer__send" id="sendBtn" title="Send (⌘/Ctrl + Enter)"><span class="composer__send-label">Send</span><svg class="composer__send-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>
         </footer>
     </div>
 </main>
+

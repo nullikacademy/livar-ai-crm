@@ -110,6 +110,14 @@ final class Supabase
         return is_array($body) ? $body : [];
     }
 
+    public function upsert(string $path, array $data, string $onConflict): array
+    {
+        [$body] = $this->request('POST', $path, ['on_conflict' => $onConflict], $data, [
+            'Prefer: resolution=merge-duplicates,return=representation',
+        ]);
+        return is_array($body) ? $body : [];
+    }
+
     /**
      * PATCH (update), filtered by PostgREST query params.
      *
@@ -186,7 +194,7 @@ final class Supabase
 
         if ($status >= 400) {
             error_log("[Supabase] {$method} {$path} -> HTTP {$status}: {$rawBody}");
-            $this->fail('The database rejected the request. Please try again.', $status >= 500 ? 502 : 400);
+            $this->fail('The database rejected the request. Please try again.', $status >= 500 ? 502 : $status);
         }
 
         $decoded = $rawBody !== '' ? json_decode($rawBody, true) : [];
@@ -202,3 +210,4 @@ final class Supabase
         throw new SupabaseException($message, $httpStatus);
     }
 }
+

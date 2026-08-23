@@ -3,6 +3,8 @@
  * index.php — application shell.
  */
 declare(strict_types=1);
+require_once __DIR__ . '/config/auth.php';
+require_auth();
 
 /**
  * Appends the file's last-modified time to an asset URL so browsers pick up
@@ -47,3 +49,4 @@ function asset(string $relativePath): string
 <script src="<?= asset('assets/js/app.js') ?>"></script>
 </body>
 </html>
+
