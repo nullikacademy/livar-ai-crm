@@ -3,8 +3,12 @@
  * index.php — application shell.
  */
 declare(strict_types=1);
+
 require_once __DIR__ . '/config/auth.php';
-require_auth();
+
+// Page load, not an API call: unauthenticated visitors get redirected to
+// the login form rather than a JSON 401.
+require_auth(false);
 
 /**
  * Appends the file's last-modified time to an asset URL so browsers pick up
@@ -49,4 +53,3 @@ function asset(string $relativePath): string
 <script src="<?= asset('assets/js/app.js') ?>"></script>
 </body>
 </html>
-

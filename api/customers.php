@@ -15,6 +15,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../config/db_functions.php';
 require_once __DIR__ . '/../config/app.php';
 require_once __DIR__ . '/../config/auth.php';
+
 require_auth();
 
 $method = $_SERVER['REQUEST_METHOD'];
@@ -105,4 +106,3 @@ function handleUpdate(): void
 
     json_response(['success' => true, 'customer' => $customer]);
 }
-

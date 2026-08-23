@@ -1,3 +1,147 @@
 <?php
-declare(strict_types=1);require_once __DIR__.'/../config/app.php';require_once __DIR__.'/../config/auth.php';require_once __DIR__.'/../config/db_functions.php';require_once __DIR__.'/../config/whatsapp.php';require_auth();$id=max(0,(int)($_GET['id']??0));$row=getMessageRow($id);if(!$row)json_error('Media not found',404);try{if(empty($row['media_path'])&&!empty($row['wa_media_id'])){$s=saveWhatsAppMedia(WhatsApp::client()->fetchMedia($row['wa_media_id']));setMessageMedia($id,$s['path'],$s['mime'],$s['size']);$row['media_path']=$s['path'];$row['media_mime']=$s['mime'];}$root=realpath(__DIR__.'/../storage');$file=$root&&$row['media_path']?realpath($root.'/'.ltrim($row['media_path'],'/\\')):false;if(!$root||!$file||!str_starts_with($file,$root.DIRECTORY_SEPARATOR)||!is_file($file))json_error('Media not found',404);header('Content-Type: '.($row['media_mime']?:'application/octet-stream'));header('Content-Disposition: inline; filename="'.preg_replace('/[^A-Za-z0-9._-]/','_',($row['media_name']?:basename($file))).'"');header('X-Content-Type-Options: nosniff');header('Cache-Control: private, max-age=31536000, immutable');header('Content-Length: '.filesize($file));readfile($file);}catch(Throwable $e){error_log('[api/media] '.$e->getMessage());json_error('Media is unavailable.',502);}
+/**
+ * api/media.php
+ *
+ *   GET /api/media.php?id=<n8n_chat_history.id>
+ *
+ * The only way media reaches a browser. Files live under storage/, which
+ * Apache is told to deny outright, so this endpoint is what re-checks the
+ * session, resolves the path safely and streams the bytes.
+ *
+ * If the row has no media_path yet -- the webhook could not defer its
+ * download, or the download failed -- this fetches it from 360dialog
+ * first, saves it, and updates the row. That is a fallback, not the
+ * plan: Meta deletes media after roughly 30 days, so the webhook still
+ * downloads eagerly.
+ */
 
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/db_functions.php';
+require_once __DIR__ . '/../config/app.php';
+require_once __DIR__ . '/../config/auth.php';
+require_once __DIR__ . '/../config/media.php';
+require_once __DIR__ . '/../config/whatsapp.php';
+
+require_auth();
+
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+    json_error('Method not allowed', 405);
+}
+
+try {
+    $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+    if ($id <= 0) {
+        json_error('id is required', 422);
+    }
+
+    $row = getMessageRow($id);
+    if ($row === null) {
+        json_error('Not found', 404);
+    }
+
+    $path = isset($row['media_path']) ? (string) $row['media_path'] : '';
+    $abs  = $path !== '' ? media_abs_path($path) : null;
+
+    // Nothing on disk: try to pull it from WhatsApp now.
+    if ($abs === null) {
+        $abs = fetch_media_now($row);
+    }
+
+    if ($abs === null) {
+        json_error('That file is no longer available.', 404);
+    }
+
+    stream_media($abs, (string) ($row['media_mime'] ?? ''), (string) ($row['media_name'] ?? ''));
+} catch (WhatsAppException $e) {
+    error_log('[api/media] ' . $e->getMessage());
+    json_error('That file could not be loaded from WhatsApp.', 502);
+} catch (SupabaseException $e) {
+    error_log('[api/media] ' . $e->getMessage());
+    json_error($e->getMessage(), $e->httpStatus);
+} catch (Throwable $e) {
+    error_log('[api/media] ' . $e->getMessage());
+    json_error('Something went wrong while loading that file.', 500);
+}
+
+/**
+ * Lazy path: downloads the row's media from 360dialog and records it.
+ *
+ * @param array<string, mixed> $row
+ * @return string|null absolute path, or null when there is nothing to get
+ */
+function fetch_media_now(array $row): ?string
+{
+    $mediaId = isset($row['wa_media_id']) ? (string) $row['wa_media_id'] : '';
+
+    // Outbound rows and anything from before this column existed have no
+    // id to fetch with, and Meta expires media after roughly 30 days
+    // anyway -- so this can legitimately come up empty.
+    if ($mediaId === '') {
+        return null;
+    }
+
+    $file  = WhatsApp::client()->fetchMedia($mediaId);
+    $saved = media_store($file['bytes'], $file['mime']);
+    setMessageMedia((int) $row['id'], $saved['path'], $saved['mime'], $saved['size']);
+
+    return $saved['abs'];
+}
+
+/**
+ * Streams a file with the stored mime type.
+ *
+ * nosniff matters here more than anywhere else in the app: these bytes
+ * came from a stranger's phone, and without it a browser could decide a
+ * "photo" is really HTML and run it on our origin.
+ */
+function stream_media(string $abs, string $mime, string $name): void
+{
+    $mime = media_normalize_mime($mime);
+    if ($mime === '' || media_ext_for_mime($mime) === null) {
+        $mime = 'application/octet-stream';
+    }
+
+    $size  = (int) filesize($abs);
+    $etag  = '"' . md5($abs . '|' . $size . '|' . (string) filemtime($abs)) . '"';
+
+    if (($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $etag) {
+        http_response_code(304);
+        header('ETag: ' . $etag);
+        exit;
+    }
+
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . $size);
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Security-Policy: default-src \'none\'; sandbox');
+    header('ETag: ' . $etag);
+    // The bytes behind an id never change, so this can cache hard. It is
+    // private: the response is only valid for this signed-in agent.
+    header('Cache-Control: private, max-age=31536000, immutable');
+    header('Content-Disposition: inline' . (($name !== '') ? '; filename="' . media_safe_filename($name) . '"' : ''));
+
+    // Stream rather than file_get_contents: a 16 MB video should not have
+    // to fit in PHP's memory limit.
+    $fh = fopen($abs, 'rb');
+    if ($fh === false) {
+        json_error('That file could not be read.', 500);
+    }
+    fpassthru($fh);
+    fclose($fh);
+    exit;
+}
+
+/**
+ * Makes a sender-supplied filename safe to put in a header.
+ *
+ * Only used for the download name -- it never touches the path on disk,
+ * which is always server-generated hex.
+ */
+function media_safe_filename(string $name): string
+{
+    $name = str_replace(["\r", "\n", '"', '\\'], '', $name);
+    $name = preg_replace('#[/\\\\]#', '_', $name) ?? '';
+    $name = trim($name);
+    return $name === '' ? 'file' : mb_substr($name, 0, 120);
+}

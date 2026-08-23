@@ -1,4 +1,288 @@
 <?php
-declare(strict_types=1);require_once __DIR__.'/../config/app.php';require_once __DIR__.'/../config/auth.php';require_once __DIR__.'/../config/db_functions.php';require_once __DIR__.'/../config/whatsapp.php';require_auth();if($_SERVER['REQUEST_METHOD']!=='POST')json_error('Method not allowed',405);
-try{$d=read_json_body();$sid=input_str($d,'session_id');$type=input_str($d,'type','text');$c=getCustomer($sid);if(!$c)json_error('Customer not found',404);if(empty($c['wa_id']))json_error('This customer has no WhatsApp number.',422);if(!isWithin24hWindow($c['last_inbound_at']??null))json_error('The 24-hour reply window has expired. An approved template is required.',409);$wa=WhatsApp::client();$fields=['direction'=>'out','msg_type'=>$type,'wa_status'=>'sent','content'=>input_str($d,'text')];if($type==='text'){$res=$wa->sendText($c['wa_id'],$fields['content']);}elseif($type==='location'){$fields+=['latitude'=>(float)($d['latitude']??0),'longitude'=>(float)($d['longitude']??0),'place_name'=>input_str($d,'place_name'),'place_address'=>input_str($d,'place_address')];$res=$wa->sendLocation($c['wa_id'],$fields['latitude'],$fields['longitude'],$fields['place_name'],$fields['place_address']);}else{$ref=basename(input_str($d,'media_ref'));$base=realpath(__DIR__.'/../storage/media/outbox');$path=$base?realpath($base.'/'.$ref):false;if(!$path||!str_starts_with($path,$base.DIRECTORY_SEPARATOR))json_error('Invalid media reference.',422);$mime=(new finfo(FILEINFO_MIME_TYPE))->file($path)?:'application/octet-stream';$actual=str_starts_with($mime,'image/')?'image':(str_starts_with($mime,'video/')?'video':'document');$mediaId=$wa->uploadMedia($path,$mime);$res=$wa->sendMedia($c['wa_id'],$actual,$mediaId,$fields['content'],basename($path));$type=$fields['msg_type']=$actual;$fields+=['media_path'=>'media/outbox/'.$ref,'media_mime'=>$mime,'media_size'=>filesize($path),'media_name'=>basename($path)];}$fields['wa_message_id']=$res['messages'][0]['id']??null;$row=insertWhatsAppMessage($sid,$fields);$message=getMessages($sid,max(0,(int)($row['id']??1)-1),1)[0]??$row;json_response(['success'=>true,'message'=>$message]);}catch(WhatsAppException $e){json_error($e->getMessage(),$e->httpStatus>=400&&$e->httpStatus<500?$e->httpStatus:502);}catch(Throwable $e){error_log('[api/send] '.$e->getMessage());json_error('Could not send the message.',500);}
+/**
+ * api/send.php
+ *
+ *   POST /api/send.php
+ *   {
+ *     "session_id": "wa_34600111222",
+ *     "type": "text" | "image" | "video" | "document" | "location",
+ *     "text": "...",                 // text body, or a caption for media
+ *     "media_ref": "...",            // from api/upload.php
+ *     "latitude": 41.3874, "longitude": 2.1686,
+ *     "place_name": "...", "place_address": "..."
+ *   }
+ *
+ * Delivers a message over WhatsApp and records it. This is the endpoint
+ * that made auth a prerequisite: unguarded, it would let anyone message
+ * customers from the business number.
+ */
 
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/db_functions.php';
+require_once __DIR__ . '/../config/app.php';
+require_once __DIR__ . '/../config/auth.php';
+require_once __DIR__ . '/../config/whatsapp.php';
+require_once __DIR__ . '/../config/media.php';
+
+require_auth();
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    json_error('Method not allowed', 405);
+}
+
+try {
+    $data      = read_json_body();
+    $sessionId = input_str($data, 'session_id');
+    $type      = input_str($data, 'type', 'text');
+    $text      = isset($data['text']) && is_string($data['text']) ? trim($data['text']) : '';
+
+    if ($sessionId === '') {
+        json_error('session_id is required', 422);
+    }
+
+    $customer = getCustomer($sessionId);
+    if ($customer === null) {
+        json_error('Customer not found', 404);
+    }
+
+    $waId = normalizeWaId((string) ($customer['wa_id'] ?? ''));
+    if ($waId === '') {
+        json_error('This customer has no WhatsApp number, so there is nothing to send to.', 422);
+    }
+
+    // The window is enforced here, not just shown in the UI. Sending
+    // outside it needs an approved template, which this CRM does not do.
+    if (!isWithin24hWindow($customer['last_inbound_at'] ?? null)) {
+        json_error(
+            'The 24-hour reply window has closed. WhatsApp only allows a free-form reply within '
+            . 'a day of the customer\'s last message; after that an approved template is required.',
+            409
+        );
+    }
+
+    $result = match ($type) {
+        'text'     => sendTextMessage($waId, $sessionId, $text),
+        'location' => sendLocationMessage($waId, $sessionId, $data),
+        default    => sendMediaMessage($waId, $sessionId, $type, $text, input_str($data, 'media_ref')),
+    };
+
+    json_response(['success' => true, 'message' => $result]);
+} catch (WhatsAppException $e) {
+    // The provider's own wording is passed through on purpose. This is
+    // the one place the generic-error rule is relaxed: "message failed"
+    // with no reason is unusable to an agent who has to decide whether
+    // to retry, fix the number, or phone the customer.
+    error_log('[api/send] ' . $e->getMessage());
+    json_error($e->getMessage(), $e->httpStatus >= 400 && $e->httpStatus < 600 ? $e->httpStatus : 502);
+} catch (SupabaseException $e) {
+    error_log('[api/send] ' . $e->getMessage());
+    json_error($e->getMessage(), $e->httpStatus);
+} catch (Throwable $e) {
+    error_log('[api/send] ' . $e->getMessage());
+    json_error('Something went wrong while sending that message.', 500);
+}
+
+/**
+ * Sends a plain text reply.
+ *
+ * @return array<string, mixed> the stored row, frontend-shaped
+ */
+function sendTextMessage(string $waId, string $sessionId, string $text): array
+{
+    if ($text === '') {
+        json_error('There is nothing to send.', 422);
+    }
+
+    $response = WhatsApp::client()->sendText($waId, $text);
+
+    return storeOutbound($sessionId, [
+        'msg_type'      => 'text',
+        'content'       => $text,
+        'wa_message_id' => WhatsApp::messageIdFrom($response),
+    ]);
+}
+
+/**
+ * Sends a pin on the map.
+ *
+ * @param array<string, mixed> $data
+ * @return array<string, mixed>
+ */
+function sendLocationMessage(string $waId, string $sessionId, array $data): array
+{
+    if (!isset($data['latitude'], $data['longitude']) || !is_numeric($data['latitude']) || !is_numeric($data['longitude'])) {
+        json_error('A latitude and longitude are required to send a location.', 422);
+    }
+
+    $lat = (float) $data['latitude'];
+    $lng = (float) $data['longitude'];
+
+    if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
+        json_error('Those coordinates are not on the map.', 422);
+    }
+
+    $name    = input_str($data, 'place_name');
+    $address = input_str($data, 'place_address');
+
+    $response = WhatsApp::client()->sendLocation($waId, $lat, $lng, $name, $address);
+
+    return storeOutbound($sessionId, [
+        'msg_type'      => 'location',
+        'content'       => $name,
+        'latitude'      => $lat,
+        'longitude'     => $lng,
+        'place_name'    => $name,
+        'place_address' => $address,
+        'wa_message_id' => WhatsApp::messageIdFrom($response),
+    ]);
+}
+
+/**
+ * Uploads a staged file to WhatsApp and sends it.
+ *
+ * $type comes from the client but is re-derived from the file's actual
+ * mime below, so a mislabelled request cannot make WhatsApp reject a
+ * perfectly good file.
+ *
+ * @return array<string, mixed>
+ */
+function sendMediaMessage(string $waId, string $sessionId, string $type, string $caption, string $mediaRef): array
+{
+    if ($mediaRef === '') {
+        json_error('Unsupported message type: ' . $type, 422);
+    }
+
+    $staged = resolveMediaRef($mediaRef);
+    if ($staged === null) {
+        json_error('That attachment is no longer available. Please attach it again.', 422);
+    }
+
+    $mime     = $staged['mime'];
+    $sendType = media_msg_type_for_mime($mime);
+    if ($sendType === 'sticker') {
+        $sendType = 'image';
+    }
+
+    $mediaId  = WhatsApp::client()->uploadMedia($staged['abs'], $mime);
+    $response = WhatsApp::client()->sendMedia(
+        $waId,
+        $sendType,
+        $mediaId,
+        $caption,
+        $sendType === 'document' ? $staged['name'] : ''
+    );
+
+    return storeOutbound($sessionId, [
+        'msg_type'      => $sendType,
+        'content'       => $caption,
+        'media_path'    => $staged['path'],
+        'media_mime'    => $mime,
+        'media_size'    => $staged['size'],
+        'media_name'    => $staged['name'],
+        'wa_message_id' => WhatsApp::messageIdFrom($response),
+    ]);
+}
+
+/**
+ * Looks a media_ref from api/upload.php back up on disk.
+ *
+ * The ref is the opaque basename the upload endpoint generated, so it
+ * carries no path of its own; the sidecar holds the original filename,
+ * which is display-only and never touches the path.
+ *
+ * @return array{abs: string, path: string, mime: string, size: int, name: string}|null
+ */
+function resolveMediaRef(string $ref): ?array
+{
+    // Belt and braces: the ref is server-generated hex plus an
+    // extension, so anything else is not one of ours.
+    if (!preg_match('/^[0-9a-f]{32}\.[a-z0-9]{1,5}$/', $ref)) {
+        error_log('[api/send] rejected a malformed media_ref: ' . $ref);
+        return null;
+    }
+
+    $relative = 'outbox/' . $ref;
+    $abs      = media_abs_path($relative);
+    if ($abs === null) {
+        return null;
+    }
+
+    $mime = '';
+    $name = '';
+    $meta = @file_get_contents($abs . '.json');
+    if ($meta !== false) {
+        $decoded = json_decode($meta, true);
+        if (is_array($decoded)) {
+            $mime = (string) ($decoded['mime'] ?? '');
+            $name = (string) ($decoded['name'] ?? '');
+        }
+    }
+
+    // Trust the file itself over anything recorded beside it.
+    if (function_exists('finfo_open')) {
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        if ($finfo !== false) {
+            $detected = finfo_file($finfo, $abs);
+            finfo_close($finfo);
+            if (is_string($detected) && $detected !== '') {
+                $mime = $detected;
+            }
+        }
+    }
+
+    if (media_ext_for_mime($mime) === null) {
+        error_log('[api/send] staged file has a disallowed mime: ' . $mime);
+        return null;
+    }
+
+    return [
+        'abs'  => $abs,
+        'path' => $relative,
+        'mime' => media_normalize_mime($mime),
+        'size' => (int) filesize($abs),
+        'name' => $name !== '' ? $name : basename($abs),
+    ];
+}
+
+/**
+ * Records a message we just sent and returns it in the shape the chat
+ * renders, so the UI can drop it straight in without a refetch.
+ *
+ * @param array<string, mixed> $fields
+ * @return array<string, mixed>
+ */
+function storeOutbound(string $sessionId, array $fields): array
+{
+    $fields['direction'] = 'out';
+    $fields['wa_status'] = 'sent';
+
+    $row = insertWhatsAppMessage($sessionId, $fields);
+    if ($row === null) {
+        // Delivered but not recorded. Say so rather than reporting a
+        // failure the agent would retry -- that would send it twice.
+        error_log('[api/send] message was sent but could not be stored: ' . json_encode($fields));
+        json_error('The message was sent, but the CRM could not record it. Reload before sending again.', 500);
+    }
+
+    $id      = (int) $row['id'];
+    $msgType = (string) ($fields['msg_type'] ?? 'text');
+
+    return [
+        'id'            => $id,
+        'type'          => 'ai',
+        'content'       => (string) ($fields['content'] ?? ''),
+        'created_at'    => $row['created_at'] ?? null,
+        'direction'     => 'out',
+        'wa_status'     => 'sent',
+        'msg_type'      => $msgType,
+        'media_url'     => in_array($msgType, MEDIA_MSG_TYPES, true) ? 'api/media.php?id=' . $id : null,
+        'media_mime'    => $fields['media_mime'] ?? null,
+        'media_size'    => isset($fields['media_size']) ? (int) $fields['media_size'] : null,
+        'media_name'    => $fields['media_name'] ?? null,
+        'latitude'      => $fields['latitude'] ?? null,
+        'longitude'     => $fields['longitude'] ?? null,
+        'place_name'    => $fields['place_name'] ?? null,
+        'place_address' => $fields['place_address'] ?? null,
+    ];
+}

@@ -110,11 +110,38 @@ final class Supabase
         return is_array($body) ? $body : [];
     }
 
-    public function upsert(string $path, array $data, string $onConflict): array
+    /**
+     * POST with ON CONFLICT (upsert), resolving on $onConflict.
+     *
+     * Needed for the race-free get-or-create the inbound webhook does on
+     * `wa_id`: two simultaneous deliveries from a brand-new number would
+     * otherwise both pass a check-then-insert and the loser would surface
+     * as a 409, which request() flattens into a generic 400 -- impossible
+     * to tell apart from a validation error.
+     *
+     * $onConflict must name a column covered by a NON-partial unique
+     * index; Postgres cannot infer a partial one (see sql/schema.sql).
+     *
+     * With $ignoreDuplicates the conflicting row is left untouched and
+     * the response is an empty array, which is how insertWhatsAppMessage()
+     * detects a webhook retry. Otherwise the row is merged (updated) with
+     * the payload and returned.
+     *
+     * @param array<string, mixed> $data
+     * @return array<int, array<string, mixed>>
+     */
+    public function upsert(string $path, array $data, string $onConflict, bool $ignoreDuplicates = false): array
     {
-        [$body] = $this->request('POST', $path, ['on_conflict' => $onConflict], $data, [
-            'Prefer: resolution=merge-duplicates,return=representation',
-        ]);
+        $resolution = $ignoreDuplicates ? 'ignore-duplicates' : 'merge-duplicates';
+
+        [$body] = $this->request(
+            'POST',
+            $path,
+            ['on_conflict' => $onConflict],
+            $data,
+            ['Prefer: resolution=' . $resolution . ',return=representation']
+        );
+
         return is_array($body) ? $body : [];
     }
 
@@ -134,12 +161,18 @@ final class Supabase
     /**
      * Calls a Postgres function exposed via PostgREST (POST /rpc/<fn>).
      *
+     * $query takes the same params a table read does -- notably `select`,
+     * which PostgREST validates against the function's return type even
+     * when it returns no rows. That is the only way to check a function's
+     * shape on an empty table.
+     *
      * @param array<string, mixed> $args
+     * @param array<string, string> $query
      * @return array<int, array<string, mixed>>
      */
-    public function rpc(string $functionName, array $args = []): array
+    public function rpc(string $functionName, array $args = [], array $query = []): array
     {
-        [$body] = $this->request('POST', 'rpc/' . $functionName, [], $args);
+        [$body] = $this->request('POST', 'rpc/' . $functionName, $query, $args);
         return is_array($body) ? $body : [];
     }
 
@@ -194,7 +227,7 @@ final class Supabase
 
         if ($status >= 400) {
             error_log("[Supabase] {$method} {$path} -> HTTP {$status}: {$rawBody}");
-            $this->fail('The database rejected the request. Please try again.', $status >= 500 ? 502 : $status);
+            $this->fail('The database rejected the request. Please try again.', $status >= 500 ? 502 : 400);
         }
 
         $decoded = $rawBody !== '' ? json_decode($rawBody, true) : [];
@@ -210,4 +243,3 @@ final class Supabase
         throw new SupabaseException($message, $httpStatus);
     }
 }
-

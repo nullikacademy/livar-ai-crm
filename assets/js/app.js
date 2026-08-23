@@ -16,8 +16,15 @@
         customers: 'api/customers.php',
         messages: 'api/messages.php',
         webhook: 'api/webhook.php',
-        send: 'api/send.php', upload: 'api/upload.php',
+        send: 'api/send.php',
+        upload: 'api/upload.php',
     };
+
+    /**
+     * WhatsApp only allows a free-form reply within 24h of the
+     * customer's last message. Kept in sync with WHATSAPP_WINDOW_HOURS.
+     */
+    const WINDOW_HOURS = 24;
 
     const PAGE_SIZE = 30;
 
@@ -46,7 +53,16 @@
         scrollJumpBtn: document.getElementById('scrollJumpBtn'),
         composerInput: document.getElementById('composerInput'),
         generateBtn: document.getElementById('generateBtn'),
-        sendBtn: document.getElementById('sendBtn'), attachBtn: document.getElementById('attachBtn'), locationBtn: document.getElementById('locationBtn'), attachInput: document.getElementById('attachInput'), attachmentChip: document.getElementById('attachmentChip'), windowNotice: document.getElementById('windowNotice'), windowStatus: document.getElementById('windowStatus'),
+        sendBtn: document.getElementById('sendBtn'),
+        attachBtn: document.getElementById('attachBtn'),
+        attachInput: document.getElementById('attachInput'),
+        attachChip: document.getElementById('attachChip'),
+        attachChipIcon: document.getElementById('attachChipIcon'),
+        attachChipName: document.getElementById('attachChipName'),
+        attachChipMeta: document.getElementById('attachChipMeta'),
+        attachChipRemove: document.getElementById('attachChipRemove'),
+        windowPill: document.getElementById('windowPill'),
+        windowNotice: document.getElementById('windowNotice'),
         // Details panel
         panelOverlay: document.getElementById('panelOverlay'),
         detailsPanel: document.getElementById('detailsPanel'),
@@ -71,8 +87,16 @@
         selectedCustomer: null,
         messages: [],
         isSending: false,
-        mediaRef: null, pendingLocation: null, pollTimer: null, sidebarTimer: null, pollCount: 0,
+        // Highest message id already on screen. The conversation poll asks
+        // for rows after this one instead of re-fetching the thread.
+        maxMessageId: 0,
+        // A file staged by api/upload.php, waiting for Send.
+        attachment: null,
     };
+
+    /** How often to look for new rows, in ms. */
+    const POLL_MESSAGES_MS = 8000;
+    const POLL_SIDEBAR_MS = 25000;
 
     // ------------------------------------------------------------------
     // Small utilities
@@ -94,7 +118,14 @@
 
     function fullName(customer) {
         const name = [customer.first_name, customer.last_name].filter(Boolean).join(' ').trim();
-        return name || customer.username || customer.phone || 'Unnamed customer';
+        // wa_profile_name is whatever the customer calls themselves on
+        // WhatsApp. It sits below an agent-entered name but above the
+        // bare number, which is what a first contact would otherwise show.
+        return name
+            || customer.username
+            || customer.wa_profile_name
+            || customer.phone
+            || 'Unnamed customer';
     }
 
     function initials(customer) {
@@ -106,9 +137,9 @@
     }
 
     function relativeTime(idOrDate) {
-        // We only have sequential message ids for "last activity" in this
-        // schema (no timestamp column on n8n_chat_history), so we fall back
-        // to the customer's created_at when there is no message yet.
+        // n8n_chat_history now carries created_at, so the sidebar shows
+        // when the last message actually happened; the customer's own
+        // created_at is the fallback for a conversation with no messages.
         if (!idOrDate) return '';
         const date = new Date(idOrDate);
         if (isNaN(date.getTime())) return '';
@@ -132,9 +163,8 @@
     }
 
     async function api(url, options = {}) {
-        const isForm = options.body instanceof FormData;
         const res = await fetch(url, {
-            headers: isForm ? {} : { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             ...options,
         });
         let data;
@@ -229,7 +259,7 @@
             <span class="customer-item__body">
                 <span class="customer-item__top">
                     <span class="customer-item__name">${escapeHtml(fullName(customer))}</span>
-                    <span class="customer-item__time">${escapeHtml(relativeTime(customer.created_at))}</span>
+                    <span class="customer-item__time">${escapeHtml(relativeTime(customer.last_activity_at || customer.created_at))}</span>
                 </span>
                 <span class="customer-item__preview">${prefix}${preview}</span>
             </span>
@@ -295,6 +325,7 @@
 
     async function selectCustomer(sessionId, { focusComposer = false } = {}) {
         state.selectedSessionId = sessionId;
+        state.maxMessageId = 0;
         markSelectedInList(sessionId);
 
         el.app.classList.add('is-chat-open');
@@ -322,7 +353,6 @@
 
             state.messages = messagesData.messages;
             renderMessages({ scroll: true });
-            updateWindowState(); startPolling();
 
             // Only steal focus on pointer/desktop -- auto-focusing on a
             // phone pops the keyboard over the conversation you just opened.
@@ -347,13 +377,14 @@
         el.chatAvatar.textContent = initials(customer);
         el.chatCustomerName.textContent = fullName(customer);
         el.chatCustomerPhone.textContent = customer.phone || customer.email || 'No phone on file';
-        updateWindowState();
+        refreshWindowNotice();
     }
 
     function clearMessageBubbles() {
         el.chatMessages.querySelectorAll('.bubble-row, .chat__day-divider, .chat__empty-state').forEach((n) => n.remove());
     }
 
+    /** Full teardown and rebuild. Only for switching conversations. */
     function renderMessages({ scroll = false, highlightLastAi = false } = {}) {
         clearMessageBubbles();
 
@@ -362,6 +393,7 @@
             empty.className = 'chat__empty-state';
             empty.textContent = 'No messages yet. Start the conversation below.';
             el.chatMessages.appendChild(empty);
+            trackMaxId(state.messages);
             return;
         }
 
@@ -371,10 +403,11 @@
         state.messages.forEach((msg) => {
             const row = buildBubbleRow(msg);
             frag.appendChild(row);
-            if (msg.type === 'ai') lastAiRow = row;
+            if (isOutbound(msg)) lastAiRow = row;
         });
 
         el.chatMessages.appendChild(frag);
+        trackMaxId(state.messages);
 
         if (highlightLastAi && lastAiRow) {
             const bubble = lastAiRow.querySelector('.bubble');
@@ -384,46 +417,370 @@
         if (scroll) scrollMessagesToBottom();
     }
 
+    /**
+     * Adds rows without touching the ones already on screen.
+     *
+     * renderMessages() rebuilds everything, which with media re-requests
+     * and re-flashes every image on each poll tick. The polling path uses
+     * this instead.
+     */
+    function appendMessages(newOnes) {
+        if (!newOnes || newOnes.length === 0) return;
+
+        // The first arrival replaces the empty-state placeholder.
+        el.chatMessages.querySelector('.chat__empty-state')?.remove();
+
+        // Stay pinned to the bottom only if we were already there, so a
+        // new message can't yank the view away from someone reading back.
+        const { scrollTop, scrollHeight, clientHeight } = el.chatMessages;
+        const wasAtBottom = scrollHeight - scrollTop - clientHeight < 120;
+
+        const frag = document.createDocumentFragment();
+        newOnes.forEach((msg) => {
+            state.messages.push(msg);
+            frag.appendChild(buildBubbleRow(msg));
+        });
+        el.chatMessages.appendChild(frag);
+        trackMaxId(newOnes);
+
+        if (wasAtBottom) scrollMessagesToBottom(true);
+    }
+
+    function trackMaxId(messages) {
+        messages.forEach((m) => {
+            const id = Number(m.id);
+            if (Number.isFinite(id) && id > state.maxMessageId) state.maxMessageId = id;
+        });
+    }
+
+    /**
+     * Which side a bubble sits on.
+     *
+     * `direction` is authoritative for anything WhatsApp touched; rows
+     * written before it existed only have the LangChain `type`.
+     */
+    function isOutbound(msg) {
+        if (msg.direction === 'out') return true;
+        if (msg.direction === 'in') return false;
+        return msg.type === 'ai';
+    }
+
     function buildBubbleRow(msg) {
-        const isOurs = msg.direction ? msg.direction === 'out' : msg.type === 'ai';
+        const isOurs = isOutbound(msg);
         const row = document.createElement('div');
         row.className = `bubble-row ${isOurs ? 'bubble-row--ours' : 'bubble-row--customer'}`;
-        row.dataset.messageId = msg.id;
+        if (msg.id) row.dataset.messageId = String(msg.id);
 
         const bubble = document.createElement('div');
         bubble.className = `bubble ${isOurs ? 'bubble--ours' : 'bubble--customer'}`;
         if (msg.pending) bubble.classList.add('is-pending');
 
-        const type=msg.msg_type||'text';
-        if(type==='image'){bubble.classList.add('bubble--media');const n=document.createElement('img');n.className='bubble__image';n.loading='lazy';n.src=msg.media_url;n.addEventListener('click',()=>openLightbox(msg.media_url));bubble.appendChild(n);}
-        else if(type==='video'){bubble.classList.add('bubble--media');const n=document.createElement('video');n.className='bubble__video';n.controls=true;n.preload='metadata';n.src=msg.media_url;bubble.appendChild(n);}
-        else if(type==='audio'){const n=document.createElement('audio');n.className='bubble__audio';n.controls=true;n.src=msg.media_url;bubble.appendChild(n);}
-        else if(type==='document'){const a=document.createElement('a');a.className='bubble__doc';a.href=msg.media_url;a.textContent='📄 '+(msg.media_name||'Document');bubble.appendChild(a);}
-        else if(type==='location'){const a=document.createElement('a');a.className='bubble__location';a.href=`https://www.google.com/maps?q=${encodeURIComponent(msg.latitude)},${encodeURIComponent(msg.longitude)}`;a.target='_blank';a.rel='noopener noreferrer';a.textContent='📍 '+(msg.place_name||msg.place_address||'Location');bubble.appendChild(a);}
-        else if(type==='unsupported'||type==='sticker'){const n=document.createElement('div');n.className='bubble__text';n.textContent='Unsupported message type';bubble.appendChild(n);}
-        else bubble.appendChild(linkifiedText(msg.content));
-        if(msg.content&&type!=='text'){const cap=document.createElement('div');cap.className='bubble__caption';cap.textContent=msg.content;bubble.appendChild(cap);}
-        if(isOurs&&msg.wa_status){const s=document.createElement('div');s.className='bubble__status';s.textContent=msg.wa_status==='failed'?'Failed':(msg.wa_status==='read'?'✓✓':msg.wa_status==='delivered'?'✓✓':'✓');bubble.appendChild(s);}
+        const kind = msg.msg_type || 'text';
+        if (kind !== 'text' && kind !== 'location' && kind !== 'unsupported' && msg.media_url) {
+            bubble.classList.add('bubble--media');
+        }
+
+        switch (kind) {
+            case 'image':
+            case 'sticker':
+                buildImageBody(bubble, msg);
+                break;
+            case 'video':
+                buildVideoBody(bubble, msg);
+                break;
+            case 'audio':
+                buildAudioBody(bubble, msg);
+                break;
+            case 'document':
+                buildDocumentBody(bubble, msg);
+                break;
+            case 'location':
+                buildLocationBody(bubble, msg);
+                break;
+            case 'unsupported':
+                buildUnsupportedBody(bubble);
+                break;
+            default:
+                buildTextBody(bubble, msg);
+        }
 
         if (isOurs) {
-            const actions = document.createElement('div');
-            actions.className = 'bubble__actions';
-            const copyBtn = document.createElement('button');
-            copyBtn.type = 'button';
-            copyBtn.className = 'bubble__copy';
-            copyBtn.innerHTML = copyIconSvg() + '<span>Copy</span>';
-            copyBtn.addEventListener('click', () => copyToClipboard(msg.content, copyBtn));
-            actions.appendChild(copyBtn);
-            bubble.appendChild(actions);
+            appendStatus(bubble, msg);
+            // Copy only makes sense for something with words in it.
+            if (msg.content) appendCopyAction(bubble, msg.content);
         }
 
         row.appendChild(bubble);
         return row;
     }
 
-    function linkifiedText(value){const wrap=document.createElement('div');wrap.className='bubble__text';const re=/https?:\/\/[^\s]+/g;let i=0;for(const m of String(value||'').matchAll(re)){wrap.append(document.createTextNode(value.slice(i,m.index)));const a=document.createElement('a');a.href=m[0];a.textContent=m[0];a.target='_blank';a.rel='noopener noreferrer';wrap.append(a);i=m.index+m[0].length;}wrap.append(document.createTextNode(String(value||'').slice(i)));return wrap;}
-    function openLightbox(url){const b=document.createElement('div');b.className='lightbox';const img=document.createElement('img');img.src=url;b.appendChild(img);b.addEventListener('click',()=>b.remove());document.body.appendChild(b);}
-    function appendMessages(items){if(!items.length)return;el.chatMessages.querySelector('.chat__empty-state')?.remove();const f=document.createDocumentFragment();items.forEach(m=>f.appendChild(buildBubbleRow(m)));el.chatMessages.appendChild(f);state.messages.push(...items);scrollMessagesToBottom();}
+    // ------------------------------------------------------------------
+    // Bubble bodies
+    //
+    // Every URL below is assigned through a DOM property (img.src = url),
+    // never interpolated into an HTML string: escapeHtml() does not
+    // escape quotes, so attribute interpolation is injectable. All of
+    // them are same-origin api/media.php?id=<int> anyway.
+    // ------------------------------------------------------------------
+
+    function buildTextBody(bubble, msg) {
+        const text = document.createElement('div');
+        text.className = 'bubble__text';
+        linkifyInto(text, msg.content || '');
+        bubble.appendChild(text);
+    }
+
+    function buildImageBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Photo');
+            return;
+        }
+        const img = document.createElement('img');
+        img.className = 'bubble__image';
+        img.loading = 'lazy';
+        img.alt = msg.content || 'Photo';
+        img.src = msg.media_url;
+        img.addEventListener('click', () => openLightbox(msg.media_url, img.alt));
+        bubble.appendChild(img);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildVideoBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Video');
+            return;
+        }
+        const video = document.createElement('video');
+        video.className = 'bubble__video';
+        video.controls = true;
+        video.preload = 'metadata';
+        video.src = msg.media_url;
+        bubble.appendChild(video);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildAudioBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Voice message');
+            return;
+        }
+        const audio = document.createElement('audio');
+        audio.className = 'bubble__audio';
+        audio.controls = true;
+        audio.preload = 'metadata';
+        audio.src = msg.media_url;
+        bubble.appendChild(audio);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildDocumentBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Document');
+            return;
+        }
+        const link = document.createElement('a');
+        link.className = 'bubble__doc';
+        link.href = msg.media_url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+
+        const icon = document.createElement('span');
+        icon.className = 'bubble__doc-icon';
+        icon.innerHTML = docIconSvg();
+
+        const body = document.createElement('span');
+        body.className = 'bubble__doc-body';
+
+        const name = document.createElement('span');
+        name.className = 'bubble__doc-name';
+        name.textContent = msg.media_name || 'Document';
+
+        const meta = document.createElement('span');
+        meta.className = 'bubble__doc-meta';
+        meta.textContent = msg.media_size ? formatBytes(msg.media_size) : 'Open';
+
+        body.append(name, meta);
+        link.append(icon, body);
+        bubble.appendChild(link);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildLocationBody(bubble, msg) {
+        const link = document.createElement('a');
+        link.className = 'bubble__location';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        // Built with URLSearchParams rather than string concatenation so
+        // the coordinates can't smuggle anything into the query.
+        const params = new URLSearchParams({ q: `${msg.latitude},${msg.longitude}` });
+        link.href = `https://www.google.com/maps?${params.toString()}`;
+
+        const pin = document.createElement('span');
+        pin.className = 'bubble__location-pin';
+        pin.innerHTML = pinIconSvg();
+
+        const body = document.createElement('span');
+
+        const name = document.createElement('span');
+        name.className = 'bubble__location-name';
+        name.textContent = msg.place_name || 'Shared location';
+
+        const address = document.createElement('span');
+        address.className = 'bubble__location-address';
+        address.textContent = msg.place_address
+            || `${Number(msg.latitude).toFixed(5)}, ${Number(msg.longitude).toFixed(5)}`;
+
+        body.append(name, address);
+        link.append(pin, body);
+        bubble.appendChild(link);
+    }
+
+    function buildUnsupportedBody(bubble) {
+        const note = document.createElement('div');
+        note.className = 'bubble__unsupported';
+        note.textContent = 'Unsupported message type — open WhatsApp to view it.';
+        bubble.appendChild(note);
+    }
+
+    /** A media row whose file never made it to disk. */
+    function buildMissingMediaBody(bubble, label) {
+        bubble.classList.remove('bubble--media');
+        const note = document.createElement('div');
+        note.className = 'bubble__unsupported';
+        note.textContent = `${label} — no longer available.`;
+        bubble.appendChild(note);
+    }
+
+    function appendCaption(bubble, caption) {
+        if (!caption) return;
+        const node = document.createElement('div');
+        node.className = 'bubble__caption';
+        linkifyInto(node, caption);
+        bubble.appendChild(node);
+    }
+
+    function appendStatus(bubble, msg) {
+        if (!msg.wa_status) return;
+        const node = document.createElement('div');
+        node.className = 'bubble__status';
+
+        if (msg.wa_status === 'failed') {
+            node.classList.add('is-failed');
+            node.textContent = 'Not delivered';
+        } else if (msg.wa_status === 'read') {
+            node.classList.add('is-read');
+            node.textContent = '✓✓ Read';
+        } else if (msg.wa_status === 'delivered') {
+            node.textContent = '✓✓ Delivered';
+        } else {
+            node.textContent = '✓ Sent';
+        }
+
+        bubble.appendChild(node);
+    }
+
+    function appendCopyAction(bubble, content) {
+        const actions = document.createElement('div');
+        actions.className = 'bubble__actions';
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'bubble__copy';
+        copyBtn.innerHTML = copyIconSvg() + '<span>Copy</span>';
+        copyBtn.addEventListener('click', () => copyToClipboard(content, copyBtn));
+        actions.appendChild(copyBtn);
+        bubble.appendChild(actions);
+    }
+
+    /**
+     * Writes text into a node, turning bare URLs into anchors.
+     *
+     * Deliberately builds nodes rather than assembling HTML: the anchor
+     * text and href both go in through DOM properties, so no part of a
+     * customer's message is ever parsed as markup.
+     */
+    function linkifyInto(node, text) {
+        const pattern = /https?:\/\/[^\s<>"']+/g;
+        let lastIndex = 0;
+        let match;
+
+        while ((match = pattern.exec(text)) !== null) {
+            if (match.index > lastIndex) {
+                node.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+            }
+            // Trailing punctuation is almost never part of the link.
+            let url = match[0];
+            const trailing = url.match(/[.,;:!?)\]]+$/);
+            if (trailing) url = url.slice(0, -trailing[0].length);
+
+            const anchor = document.createElement('a');
+            anchor.className = 'bubble__link';
+            anchor.href = url;
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            anchor.textContent = url;
+            node.appendChild(anchor);
+
+            if (trailing) node.appendChild(document.createTextNode(trailing[0]));
+            lastIndex = match.index + match[0].length;
+        }
+
+        if (lastIndex < text.length) {
+            node.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }
+    }
+
+    function formatBytes(bytes) {
+        const n = Number(bytes);
+        if (!Number.isFinite(n) || n <= 0) return '';
+        if (n < 1024) return `${n} B`;
+        if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`;
+        return `${(n / 1048576).toFixed(1)} MB`;
+    }
+
+    // ------------------------------------------------------------------
+    // Lightbox
+    // ------------------------------------------------------------------
+
+    function openLightbox(url, alt) {
+        closeLightbox();
+
+        const box = document.createElement('div');
+        box.className = 'lightbox';
+        box.id = 'lightbox';
+
+        const img = document.createElement('img');
+        img.className = 'lightbox__image';
+        img.alt = alt || '';
+        img.src = url;
+        // Clicking the image itself shouldn't dismiss; clicking around it should.
+        img.addEventListener('click', (e) => e.stopPropagation());
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'lightbox__close';
+        close.setAttribute('aria-label', 'Close');
+        close.innerHTML = closeIconSvg();
+
+        box.append(img, close);
+        box.addEventListener('click', closeLightbox);
+        document.body.appendChild(box);
+    }
+
+    function closeLightbox() {
+        document.getElementById('lightbox')?.remove();
+    }
+
+    function docIconSvg() {
+        return '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+    }
+
+    function pinIconSvg() {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+    }
+
+    function closeIconSvg() {
+        return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+    }
 
     function copyIconSvg() {
         return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
@@ -497,9 +854,19 @@
         el.composerInput.style.height = Math.min(el.composerInput.scrollHeight, 148) + 'px';
     }
 
-    /** Send is enabled only when there's text and nothing already in flight. */
+    /**
+     * Send needs something to send, an open reply window, and nothing
+     * already in flight. Draft only needs a conversation -- its whole
+     * point is to fill an empty composer.
+     */
     function syncSendButton() {
-        el.generateBtn.disabled = state.isSending; el.sendBtn.disabled = state.isSending || (!el.composerInput.value.trim() && !state.mediaRef && !state.pendingLocation) || !withinWindow();
+        const hasText = el.composerInput.value.trim() !== '';
+        const hasAttachment = state.attachment !== null;
+        const open = isWindowOpen();
+
+        el.sendBtn.disabled = state.isSending || !open || (!hasText && !hasAttachment);
+        el.generateBtn.disabled = state.isSending || !state.selectedSessionId;
+        el.attachBtn.disabled = state.isSending || !state.selectedSessionId || !open;
     }
 
     el.composerInput.addEventListener('input', () => {
@@ -508,18 +875,30 @@
     });
 
     el.composerInput.addEventListener('keydown', (e) => {
-        // Cmd/Ctrl+Enter sends. Plain Enter inserts a newline, since support
-        // agents routinely paste multi-line customer messages here.
+        // Cmd/Ctrl+Enter sends. Plain Enter inserts a newline: a reply
+        // written here is often several lines long.
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             handleSend();
-        } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'g') { e.preventDefault(); handleGenerateAnswer();
+            return;
+        }
+        // Cmd/Ctrl+G asks for a draft.
+        if (e.key.toLowerCase() === 'g' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            handleGenerateAnswer();
         }
     });
 
     el.generateBtn.addEventListener('click', handleGenerateAnswer);
-    el.sendBtn.addEventListener('click',handleSend);
+    el.sendBtn.addEventListener('click', handleSend);
 
+    /**
+     * Asks n8n for a suggested reply and puts it in the composer.
+     *
+     * It does not post a bubble and does not refetch: nothing is written
+     * anywhere until the agent reads the draft, edits it, and presses
+     * Send.
+     */
     async function handleGenerateAnswer() {
         if (state.isSending) return;
         if (!state.selectedSessionId) {
@@ -527,45 +906,433 @@
             return;
         }
 
-        state.isSending = true;
-        el.generateBtn.disabled = true;
-        el.generateBtn.classList.add('is-loading');
-
         const sessionId = state.selectedSessionId;
 
+        state.isSending = true;
+        syncSendButton();
+        el.generateBtn.classList.add('is-loading');
         showTypingIndicator();
 
         try {
-            // Ask n8n to run the AI agent. n8n saves the human message and
-            // the AI reply to Supabase itself and responds once both are
-            // written.
-            const result=await api(API.webhook, {
+            const data = await api(API.webhook, {
                 method: 'POST',
-                body: JSON.stringify({ session_id: sessionId, history: state.messages.filter(m=>!m.pending).map(m=>({role:(m.direction==='out'||m.type==='ai')?'assistant':'user',content:m.content})), customer: state.selectedCustomer }),
+                body: JSON.stringify({ session_id: sessionId }),
             });
-            hideTypingIndicator();
-            el.composerInput.value=result.draft;autoGrowComposer();el.composerInput.focus();
-        } catch (err) {
-            hideTypingIndicator();
 
-            // Nothing was persisted, so drop the pending bubble and give
-            // the customer's text back to the composer for a retry.
+            if (sessionId !== state.selectedSessionId) return;
+
+            el.composerInput.value = data.draft || '';
+            autoGrowComposer();
+            el.composerInput.focus();
+            // Cursor at the end, ready to edit.
+            const end = el.composerInput.value.length;
+            el.composerInput.setSelectionRange(end, end);
+        } catch (err) {
             toast(err.message, 'error');
         } finally {
+            hideTypingIndicator();
             state.isSending = false;
             el.generateBtn.classList.remove('is-loading');
             syncSendButton();
         }
     }
 
-    async function handleSend(){if(state.isSending||!state.selectedSessionId)return;const text=el.composerInput.value.trim();const loc=state.pendingLocation;const type=loc?'location':state.mediaRef?'document':'text';state.isSending=true;const pending={id:'pending-'+Date.now(),type:'ai',direction:'out',msg_type:type,content:text,pending:true,...loc};appendMessages([pending]);el.composerInput.value='';try{const r=await api(API.send,{method:'POST',body:JSON.stringify({session_id:state.selectedSessionId,type,text,media_ref:state.mediaRef,...loc})});state.messages=state.messages.filter(m=>m.id!==pending.id);el.chatMessages.querySelector(`[data-message-id="${pending.id}"]`)?.remove();appendMessages([r.message]);state.mediaRef=null;state.pendingLocation=null;el.attachmentChip.hidden=true;refreshSidebarPreview(state.selectedSessionId);}catch(err){state.messages=state.messages.filter(m=>m.id!==pending.id);el.chatMessages.querySelector(`[data-message-id="${pending.id}"]`)?.remove();el.composerInput.value=text;toast(err.message,'error');}finally{state.isSending=false;syncSendButton();}}
-    el.attachBtn.addEventListener('click',()=>el.attachInput.click());el.attachInput.addEventListener('change',async()=>{const file=el.attachInput.files[0];if(!file)return;const fd=new FormData();fd.append('file',file);try{const r=await api(API.upload,{method:'POST',body:fd});state.mediaRef=r.media_ref;el.attachmentChip.textContent=file.name+' ×';el.attachmentChip.hidden=false;el.attachmentChip.onclick=()=>{state.mediaRef=null;el.attachmentChip.hidden=true;syncSendButton();};syncSendButton();}catch(e){toast(e.message,'error');}});
-    el.locationBtn.addEventListener('click',()=>{const raw=prompt('Latitude, longitude (for example: 35.6892, 51.3890)');if(!raw)return;const parts=raw.split(',').map(Number);if(parts.length!==2||!Number.isFinite(parts[0])||!Number.isFinite(parts[1])||Math.abs(parts[0])>90||Math.abs(parts[1])>180){toast('Enter a valid latitude and longitude.','error');return;}const name=prompt('Location label (optional)')||'';state.pendingLocation={latitude:parts[0],longitude:parts[1],place_name:name,place_address:''};state.mediaRef=null;el.attachmentChip.textContent='📍 '+(name||raw)+' ×';el.attachmentChip.hidden=false;el.attachmentChip.onclick=()=>{state.pendingLocation=null;el.attachmentChip.hidden=true;syncSendButton();};syncSendButton();});
-    function withinWindow(){const at=state.selectedCustomer?.last_inbound_at;if(!at)return false;return Date.now()-new Date(at).getTime()<86400000;}
-    function updateWindowState(){if(!state.selectedCustomer)return;const open=withinWindow();const left=Math.max(0,24-Math.floor((Date.now()-new Date(state.selectedCustomer.last_inbound_at).getTime())/3600000));el.windowStatus.textContent=open?`replies open · ${left}h left`:'reply window closed';el.windowStatus.classList.toggle('is-closed',!open);el.windowNotice.hidden=open;el.windowNotice.textContent=open?'':'The 24-hour reply window has expired. An approved template is required.';syncSendButton();}
-    function startPolling(){clearInterval(state.pollTimer);clearInterval(state.sidebarTimer);state.pollTimer=setInterval(pollMessages,8000);state.sidebarTimer=setInterval(()=>{if(!document.hidden)loadCustomers({reset:true});},25000);}
-    async function pollMessages(){if(document.hidden||!state.selectedSessionId)return;const max=state.messages.reduce((n,m)=>Math.max(n,Number(m.id)||0),0);try{const d=await api(`${API.messages}?session_id=${encodeURIComponent(state.selectedSessionId)}&since_id=${max}`);appendMessages(d.messages);if(++state.pollCount%3===0){const all=await api(`${API.messages}?session_id=${encodeURIComponent(state.selectedSessionId)}&limit=200`);all.messages.forEach(fresh=>{const old=state.messages.find(m=>m.id===fresh.id);if(old&&old.wa_status!==fresh.wa_status){old.wa_status=fresh.wa_status;const s=el.chatMessages.querySelector(`[data-message-id="${fresh.id}"] .bubble__status`);if(s)s.textContent=fresh.wa_status==='failed'?'Failed':fresh.wa_status==='read'?'✓✓':fresh.wa_status==='delivered'?'✓✓':'✓';}});}const c=await api(`${API.customers}?session_id=${encodeURIComponent(state.selectedSessionId)}`);state.selectedCustomer=c.customer;updateWindowState();}catch(e){console.warn(e);}}
-    document.addEventListener('visibilitychange',()=>{if(!document.hidden){pollMessages();loadCustomers({reset:true});}});
+    /**
+     * Delivers what is in the composer over WhatsApp.
+     */
+    async function handleSend() {
+        if (state.isSending) return;
+        if (!state.selectedSessionId) {
+            toast('Select a customer first.', 'error');
+            return;
+        }
+        if (!isWindowOpen()) {
+            toast('The 24-hour reply window has closed.', 'error');
+            return;
+        }
+
+        const text = el.composerInput.value.trim();
+        const attachment = state.attachment;
+
+        if (!text && !attachment) {
+            toast('Write a reply first.', 'error');
+            return;
+        }
+
+        const sessionId = state.selectedSessionId;
+        state.isSending = true;
+        syncSendButton();
+        el.sendBtn.classList.add('is-loading');
+
+        // Clear optimistically so the agent can start the next reply.
+        el.composerInput.value = '';
+        autoGrowComposer();
+
+        const pending = {
+            id: 'pending',
+            type: 'ai',
+            direction: 'out',
+            msg_type: attachment ? attachment.msgType : 'text',
+            content: text,
+            media_url: attachment ? attachment.previewUrl : null,
+            media_name: attachment ? attachment.name : null,
+            media_size: attachment ? attachment.size : null,
+            pending: true,
+        };
+        appendMessages([pending]);
+
+        try {
+            const payload = { session_id: sessionId, type: 'text', text };
+            if (attachment) {
+                payload.type = attachment.msgType;
+                payload.media_ref = attachment.ref;
+            }
+
+            const data = await api(API.send, { method: 'POST', body: JSON.stringify(payload) });
+
+            replacePendingBubble(data.message);
+            clearAttachment();
+            refreshSidebarPreview(sessionId);
+        } catch (err) {
+            // Nothing was delivered, so take the bubble back down and
+            // hand the text back for a retry or an edit.
+            removePendingBubble();
+            el.composerInput.value = text;
+            autoGrowComposer();
+            toast(err.message, 'error');
+        } finally {
+            state.isSending = false;
+            el.sendBtn.classList.remove('is-loading');
+            syncSendButton();
+        }
+    }
+
+    /** Swaps the optimistic bubble for the real, stored row. */
+    function replacePendingBubble(message) {
+        const node = el.chatMessages.querySelector('.bubble-row[data-message-id="pending"]');
+        state.messages = state.messages.filter((m) => m.id !== 'pending');
+
+        if (!message) {
+            node?.remove();
+            return;
+        }
+
+        state.messages.push(message);
+        trackMaxId([message]);
+
+        const fresh = buildBubbleRow(message);
+        if (node) {
+            node.replaceWith(fresh);
+        } else {
+            el.chatMessages.appendChild(fresh);
+        }
+        scrollMessagesToBottom(true);
+    }
+
+    function removePendingBubble() {
+        el.chatMessages.querySelector('.bubble-row[data-message-id="pending"]')?.remove();
+        state.messages = state.messages.filter((m) => m.id !== 'pending');
+    }
+
+    // ------------------------------------------------------------------
+    // Staged attachment
+    // ------------------------------------------------------------------
+
+    /**
+     * The attach button opens a small menu: a file, or a location.
+     * A location is not a file, so it cannot share the file picker.
+     */
+    el.attachBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (document.getElementById('attachMenu')) {
+            closeAttachMenu();
+            return;
+        }
+        openAttachMenu();
+    });
+
+    function openAttachMenu() {
+        const menu = document.createElement('div');
+        menu.className = 'attach-menu';
+        menu.id = 'attachMenu';
+
+        const fileItem = document.createElement('button');
+        fileItem.type = 'button';
+        fileItem.className = 'attach-menu__item';
+        fileItem.innerHTML = paperclipIconSvg() + '<span>Photo, video or file</span>';
+        fileItem.addEventListener('click', () => {
+            closeAttachMenu();
+            el.attachInput.click();
+        });
+
+        const locItem = document.createElement('button');
+        locItem.type = 'button';
+        locItem.className = 'attach-menu__item';
+        locItem.innerHTML = pinIconSvg() + '<span>Send location</span>';
+        locItem.addEventListener('click', () => {
+            closeAttachMenu();
+            openLocationDialog();
+        });
+
+        menu.append(fileItem, locItem);
+        document.body.appendChild(menu);
+
+        // Anchored above the button, clamped to the viewport.
+        const rect = el.attachBtn.getBoundingClientRect();
+        menu.style.left = `${Math.max(8, rect.left)}px`;
+        menu.style.top = `${Math.max(8, rect.top - menu.offsetHeight - 8)}px`;
+
+        setTimeout(() => document.addEventListener('click', closeAttachMenu, { once: true }), 0);
+    }
+
+    function closeAttachMenu() {
+        document.getElementById('attachMenu')?.remove();
+    }
+
+    el.attachInput.addEventListener('change', async () => {
+        const file = el.attachInput.files?.[0];
+        // Reset immediately so picking the same file twice still fires.
+        el.attachInput.value = '';
+        if (!file) return;
+        await stageAttachment(file);
+    });
+
+    /**
+     * Uploads a file to api/upload.php and shows it as a chip.
+     *
+     * The file only reaches WhatsApp when Send is pressed, so an agent
+     * who picks the wrong one can just remove the chip.
+     */
+    async function stageAttachment(file) {
+        clearAttachment();
+
+        el.attachBtn.disabled = true;
+        el.attachChip.hidden = false;
+        el.attachChipName.textContent = file.name;
+        el.attachChipMeta.textContent = 'Uploading…';
+
+        try {
+            const body = new FormData();
+            body.append('file', file);
+            // Let the browser set the multipart boundary; api() would
+            // otherwise force application/json.
+            const res = await fetch(API.upload, { method: 'POST', body });
+            const data = await res.json();
+            if (!res.ok || data.success === false) {
+                throw new Error(data.error || 'That file could not be attached.');
+            }
+
+            const previewUrl = data.msg_type === 'image' ? URL.createObjectURL(file) : null;
+
+            state.attachment = {
+                ref: data.media_ref,
+                name: data.name,
+                mime: data.mime,
+                size: data.size,
+                msgType: data.msg_type,
+                previewUrl,
+            };
+
+            el.attachChipName.textContent = data.name;
+            el.attachChipMeta.textContent = `${data.msg_type} · ${formatBytes(data.size)}`;
+            el.attachChipIcon.innerHTML = '';
+            if (previewUrl) {
+                const thumb = document.createElement('img');
+                thumb.src = previewUrl;
+                thumb.alt = '';
+                el.attachChipIcon.appendChild(thumb);
+            } else {
+                el.attachChipIcon.innerHTML = docIconSvg();
+            }
+        } catch (err) {
+            clearAttachment();
+            toast(err.message, 'error');
+        } finally {
+            syncSendButton();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Send location
+    // ------------------------------------------------------------------
+
+    function openLocationDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'location-dialog';
+        overlay.id = 'locationDialog';
+        overlay.innerHTML = `
+            <form class="location-dialog__card" id="locationForm">
+                <h3>Send a location</h3>
+                <div class="location-dialog__row">
+                    <div class="field">
+                        <label for="locLat">Latitude</label>
+                        <input type="text" id="locLat" inputmode="decimal" placeholder="41.38740" required />
+                    </div>
+                    <div class="field">
+                        <label for="locLng">Longitude</label>
+                        <input type="text" id="locLng" inputmode="decimal" placeholder="2.16860" required />
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="locName">Label (optional)</label>
+                    <input type="text" id="locName" placeholder="LiVAR warehouse" />
+                </div>
+                <div class="field">
+                    <label for="locAddress">Address (optional)</label>
+                    <input type="text" id="locAddress" placeholder="Carrer de Mallorca 1, Barcelona" />
+                </div>
+                <div class="location-dialog__actions">
+                    <button type="button" class="btn btn--ghost" id="locCancel">Cancel</button>
+                    <button type="submit" class="btn btn--primary" id="locSend">Send location</button>
+                </div>
+            </form>
+        `;
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) closeLocationDialog();
+        });
+        document.body.appendChild(overlay);
+        document.getElementById('locCancel').addEventListener('click', closeLocationDialog);
+        document.getElementById('locationForm').addEventListener('submit', submitLocation);
+        document.getElementById('locLat').focus();
+    }
+
+    function closeLocationDialog() {
+        document.getElementById('locationDialog')?.remove();
+    }
+
+    async function submitLocation(e) {
+        e.preventDefault();
+
+        const lat = parseFloat(document.getElementById('locLat').value.replace(',', '.'));
+        const lng = parseFloat(document.getElementById('locLng').value.replace(',', '.'));
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+            toast('Those coordinates are not on the map.', 'error');
+            return;
+        }
+
+        const placeName = document.getElementById('locName').value.trim();
+        const placeAddress = document.getElementById('locAddress').value.trim();
+        const sessionId = state.selectedSessionId;
+        const btn = document.getElementById('locSend');
+
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+
+        try {
+            const data = await api(API.send, {
+                method: 'POST',
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    type: 'location',
+                    latitude: lat,
+                    longitude: lng,
+                    place_name: placeName,
+                    place_address: placeAddress,
+                }),
+            });
+
+            closeLocationDialog();
+            appendMessages([data.message]);
+            refreshSidebarPreview(sessionId);
+        } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Send location';
+            toast(err.message, 'error');
+        }
+    }
+
+    function paperclipIconSvg() {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+    }
+
+    /** Drops the staged file and hides its chip. */
+    function clearAttachment() {
+        if (state.attachment?.previewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(state.attachment.previewUrl);
+        }
+        state.attachment = null;
+        el.attachChip.hidden = true;
+        el.attachChipIcon.innerHTML = '';
+        el.attachChipName.textContent = '';
+        el.attachChipMeta.textContent = '';
+        syncSendButton();
+    }
+
+    el.attachChipRemove.addEventListener('click', clearAttachment);
+
+    // ------------------------------------------------------------------
+    // 24-hour reply window
+    // ------------------------------------------------------------------
+
+    /** Seconds of free-form reply time left, from the loaded customer. */
+    function windowSecondsRemaining() {
+        const at = state.selectedCustomer?.last_inbound_at;
+        if (!at) return 0;
+        const ts = new Date(at).getTime();
+        if (Number.isNaN(ts)) return 0;
+        return Math.max(0, Math.round((ts + WINDOW_HOURS * 3600000 - Date.now()) / 1000));
+    }
+
+    function isWindowOpen() {
+        return windowSecondsRemaining() > 0;
+    }
+
+    /**
+     * Repaints the header pill and the blocking notice.
+     *
+     * A customer with no wa_id at all is a hand-created record that was
+     * never a WhatsApp conversation; there is nothing to say about a
+     * window it does not have.
+     */
+    function refreshWindowNotice() {
+        const customer = state.selectedCustomer;
+
+        if (!customer || !customer.wa_id) {
+            el.windowPill.hidden = true;
+            el.windowNotice.hidden = true;
+            syncSendButton();
+            return;
+        }
+
+        const left = windowSecondsRemaining();
+
+        if (left <= 0) {
+            el.windowPill.hidden = false;
+            el.windowPill.className = 'window-pill is-closed';
+            el.windowPill.textContent = 'replies closed';
+
+            el.windowNotice.hidden = false;
+            el.windowNotice.innerHTML = '';
+            const strong = document.createElement('strong');
+            strong.textContent = 'The 24-hour reply window has closed. ';
+            el.windowNotice.append(
+                strong,
+                document.createTextNode(
+                    'WhatsApp only allows a free-form reply within a day of the customer\'s last '
+                    + 'message. Sending now needs an approved template, which this CRM does not do.'
+                ),
+            );
+        } else {
+            const hours = Math.floor(left / 3600);
+            const mins = Math.floor((left % 3600) / 60);
+            const label = hours > 0 ? `${hours}h left` : `${mins}m left`;
+
+            el.windowPill.hidden = false;
+            el.windowPill.className = hours < 2 ? 'window-pill is-closing' : 'window-pill';
+            el.windowPill.textContent = `replies open · ${label}`;
+
+            el.windowNotice.hidden = true;
+        }
+
+        syncSendButton();
+    }
+
+    // The window drains in real time, so re-check it on a slow tick as
+    // well as on every poll -- an agent can sit on one conversation for
+    // the last hour of it.
+    setInterval(refreshWindowNotice, 60000);
 
     function showTypingIndicator() {
         hideTypingIndicator();
@@ -585,8 +1352,100 @@
         if (sessionId !== state.selectedSessionId) return;
         const data = await api(`${API.messages}?session_id=${encodeURIComponent(sessionId)}`);
         state.messages = data.messages;
+        state.maxMessageId = 0;
         renderMessages({ scroll, highlightLastAi });
     }
+
+    // ------------------------------------------------------------------
+    // Polling
+    //
+    // Messages now arrive from a phone rather than from something the
+    // agent just did, so without this an inbound WhatsApp message would
+    // never show up until the conversation was reopened.
+    // ------------------------------------------------------------------
+
+    let messagePollTimer = null;
+    let sidebarPollTimer = null;
+
+    function startPolling() {
+        stopPolling();
+        if (document.hidden) return;
+
+        messagePollTimer = setInterval(pollMessages, POLL_MESSAGES_MS);
+        sidebarPollTimer = setInterval(pollSidebar, POLL_SIDEBAR_MS);
+    }
+
+    function stopPolling() {
+        if (messagePollTimer !== null) clearInterval(messagePollTimer);
+        if (sidebarPollTimer !== null) clearInterval(sidebarPollTimer);
+        messagePollTimer = null;
+        sidebarPollTimer = null;
+    }
+
+    /** Asks only for rows newer than the last one on screen. */
+    async function pollMessages() {
+        const sessionId = state.selectedSessionId;
+        if (!sessionId || state.isSending) return;
+
+        try {
+            const params = new URLSearchParams({
+                session_id: sessionId,
+                since_id: String(state.maxMessageId),
+            });
+            const data = await api(`${API.messages}?${params.toString()}`);
+
+            // The agent may have switched conversations mid-request.
+            if (sessionId !== state.selectedSessionId) return;
+            if (!data.messages || data.messages.length === 0) return;
+
+            appendMessages(data.messages);
+
+            // An inbound message reopens (or extends) the reply window,
+            // so keep the header honest without a second request.
+            const lastInbound = [...data.messages].reverse()
+                .find((m) => m.direction === 'in' && m.created_at);
+            if (lastInbound && state.selectedCustomer) {
+                state.selectedCustomer.last_inbound_at = lastInbound.created_at;
+            }
+            refreshWindowNotice();
+        } catch {
+            /* A dropped poll is not worth a toast; the next tick retries. */
+        }
+    }
+
+    /** Refreshes page 0 of the sidebar and merges it in place. */
+    async function pollSidebar() {
+        if (state.isLoadingCustomers || state.search !== '') return;
+
+        try {
+            const params = new URLSearchParams({ limit: PAGE_SIZE, offset: 0, search: '' });
+            const data = await api(`${API.customers}?${params.toString()}`);
+
+            const seen = new Set(data.customers.map((c) => c.session_id));
+            // Keep anything already loaded further down the list, in its
+            // existing order, behind the freshly ordered first page.
+            const tail = state.customers.filter((c) => !seen.has(c.session_id));
+            state.customers = [...data.customers, ...tail];
+
+            clearCustomerListDom();
+            renderCustomers(state.customers);
+            markSelectedInList(state.selectedSessionId);
+        } catch {
+            /* Same: the next tick will catch up. */
+        }
+    }
+
+    // A background tab should not keep polling; coming back should not
+    // wait a full interval to catch up.
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopPolling();
+            return;
+        }
+        startPolling();
+        pollMessages();
+        pollSidebar();
+    });
 
     async function refreshSidebarPreview(sessionId) {
         try {
@@ -718,7 +1577,13 @@
         const typingInField = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 
         if (e.key === 'Escape') {
-            if (el.detailsPanel.classList.contains('is-open')) {
+            if (document.getElementById('locationDialog')) {
+                closeLocationDialog();
+            } else if (document.getElementById('attachMenu')) {
+                closeAttachMenu();
+            } else if (document.getElementById('lightbox')) {
+                closeLightbox();
+            } else if (el.detailsPanel.classList.contains('is-open')) {
                 closeDetailsPanel();
             } else if (el.app.classList.contains('is-chat-open') && !isDesktop()) {
                 closeChat();
@@ -807,5 +1672,5 @@
 
     syncSendButton();
     loadCustomers({ reset: true });
+    startPolling();
 })();
-

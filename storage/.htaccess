@@ -1,2 +1,4 @@
+# Media files are never served directly -- api/media.php streams them
+# after re-checking the session, so nothing here should be reachable by
+# guessing a URL.
 Require all denied
-

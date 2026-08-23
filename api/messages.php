@@ -2,10 +2,13 @@
 /**
  * api/messages.php
  *
- *   GET /api/messages.php?session_id=xxx   -> full chat history
+ *   GET /api/messages.php?session_id=xxx                 -> recent history
+ *   GET /api/messages.php?session_id=xxx&since_id=123    -> only newer rows
  *
- * This read endpoint supports bounded incremental polling. Inbound and
- * outbound transport endpoints are the only writers; n8n returns drafts.
+ * Reads only. Inbound messages are written by api/whatsapp_webhook.php
+ * and outbound ones by api/send.php; the frontend polls this endpoint
+ * with `since_id` so a conversation picks up new rows without re-fetching
+ * (and re-rendering) everything it already has.
  */
 
 declare(strict_types=1);
@@ -13,6 +16,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../config/db_functions.php';
 require_once __DIR__ . '/../config/app.php';
 require_once __DIR__ . '/../config/auth.php';
+
 require_auth();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
@@ -25,9 +29,12 @@ try {
         json_error('session_id is required', 422);
     }
 
+    $sinceId = isset($_GET['since_id']) ? max(0, (int) $_GET['since_id']) : 0;
+    $limit   = isset($_GET['limit']) ? max(1, min(500, (int) $_GET['limit'])) : 200;
+
     json_response([
         'success'  => true,
-        'messages' => getMessages($sessionId, max(0, (int) ($_GET['since_id'] ?? 0)), max(1, min(500, (int) ($_GET['limit'] ?? 200)))),
+        'messages' => getMessages($sessionId, $sinceId, $limit),
     ]);
 } catch (SupabaseException $e) {
     error_log('[api/messages] ' . $e->getMessage());
@@ -36,4 +43,3 @@ try {
     error_log('[api/messages] ' . $e->getMessage());
     json_error('Something went wrong while talking to the database.', 500);
 }
-
