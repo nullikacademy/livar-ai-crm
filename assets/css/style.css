@@ -817,7 +817,10 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     border-color: var(--accent);
 }
 
-.composer__send {
+.composer__attach { flex-shrink: 0; }
+
+.composer__send,
+.composer__draft {
     position: relative;
     flex-shrink: 0;
     height: var(--tap);
@@ -825,12 +828,21 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     padding: 0;
     border-radius: var(--r-full);
 }
-.composer__send-label { display: none; }
-.composer__send-icon { display: block; }
+.composer__send-label,
+.composer__draft-label { display: none; }
+.composer__send-icon,
+.composer__draft-icon { display: block; }
+
+.composer__draft { color: var(--ink-2); }
+.composer__draft:hover:not(:disabled) { background: var(--accent-tint); color: var(--accent-active); }
+.composer__draft:disabled { opacity: 0.4; }
 
 .composer__send.is-loading .composer__send-icon,
-.composer__send.is-loading .composer__send-label { visibility: hidden; }
-.composer__send.is-loading::after {
+.composer__send.is-loading .composer__send-label,
+.composer__draft.is-loading .composer__draft-icon,
+.composer__draft.is-loading .composer__draft-label { visibility: hidden; }
+.composer__send.is-loading::after,
+.composer__draft.is-loading::after {
     content: '';
     position: absolute;
     width: 17px;
@@ -840,6 +852,153 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     border-top-color: #fff;
     animation: spin 0.7s linear infinite;
 }
+.composer__draft.is-loading::after {
+    border-color: rgba(255, 122, 0, 0.3);
+    border-top-color: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
+   24-hour reply window
+   -------------------------------------------------------------------------- */
+
+/* Header pill: how long is left to reply freely. */
+.window-pill {
+    flex-shrink: 0;
+    margin-right: 4px;
+    padding: 4px 10px;
+    border-radius: var(--r-full);
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    background: #ECFDF5;
+    color: #047857;
+    border: 1px solid #A7F3D0;
+}
+.window-pill.is-closing { background: #FFFBEB; color: #B45309; border-color: #FDE68A; }
+.window-pill.is-closed  { background: #FEF2F2; color: var(--danger); border-color: #FECACA; }
+
+/* Full notice above the composer once the window has shut. */
+.window-notice {
+    flex-shrink: 0;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: #B42318;
+    background: #FEF3F2;
+    border-top: 1px solid #FECDCA;
+}
+.window-notice strong { font-weight: 650; }
+
+/* --------------------------------------------------------------------------
+   Staged attachment chip
+   -------------------------------------------------------------------------- */
+
+.attach-chip {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    animation: riseIn var(--t-fast) var(--ease) both;
+}
+
+.attach-chip__icon {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-sm);
+    overflow: hidden;
+    background: var(--surface-3);
+    color: var(--ink-2);
+}
+.attach-chip__icon img { width: 100%; height: 100%; object-fit: cover; }
+
+.attach-chip__body { flex: 1; min-width: 0; }
+.attach-chip__name {
+    display: block;
+    font-size: 13.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.attach-chip__meta { display: block; font-size: 11.5px; color: var(--ink-3); }
+
+.attach-chip__remove {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-full);
+    color: var(--ink-3);
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.attach-chip__remove:hover { background: var(--line-strong); color: var(--ink); }
+
+/* Attachment menu (file / location) */
+.attach-menu {
+    position: absolute;
+    z-index: 20;
+    min-width: 190px;
+    padding: 6px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow-2);
+    animation: riseIn var(--t-fast) var(--ease) both;
+}
+.attach-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 10px;
+    border-radius: var(--r-sm);
+    font-size: 14px;
+    font-weight: 500;
+    text-align: left;
+    color: var(--ink);
+    transition: background var(--t-fast) var(--ease);
+}
+.attach-menu__item:hover { background: var(--surface-2); }
+.attach-menu__item svg { color: var(--ink-3); flex-shrink: 0; }
+
+/* Location form, reusing the details-panel look */
+.location-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(16, 16, 20, 0.34);
+    animation: fadeInFull var(--t-fast) var(--ease) both;
+}
+.location-dialog__card {
+    width: 100%;
+    max-width: 380px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px;
+    border-radius: var(--r-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-3);
+}
+.location-dialog__card h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.location-dialog__row { display: flex; gap: 10px; }
+.location-dialog__row > .field { flex: 1; min-width: 0; }
+.location-dialog__actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 2px; }
 
 /* --------------------------------------------------------------------------
    Details slide-over
@@ -1129,13 +1288,18 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     }
     #newChatBtn .btn__label { display: inline; }
 
-    .composer__send {
+    .composer__send,
+    .composer__draft {
         width: auto;
-        padding: 0 20px;
+        padding: 0 18px;
         border-radius: var(--r-md);
     }
-    .composer__send-label { display: inline; }
+    .composer__send-label,
+    .composer__draft-label { display: inline; }
     .composer__send-icon { display: none; }
+    /* The wand stays next to "Draft" -- it is what makes the secondary
+       button read as the AI one rather than a second Send. */
+    .composer__draft { gap: 6px; }
 
     .bubble { max-width: 66%; }
 }

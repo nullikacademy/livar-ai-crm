@@ -16,7 +16,15 @@
         customers: 'api/customers.php',
         messages: 'api/messages.php',
         webhook: 'api/webhook.php',
+        send: 'api/send.php',
+        upload: 'api/upload.php',
     };
+
+    /**
+     * WhatsApp only allows a free-form reply within 24h of the
+     * customer's last message. Kept in sync with WHATSAPP_WINDOW_HOURS.
+     */
+    const WINDOW_HOURS = 24;
 
     const PAGE_SIZE = 30;
 
@@ -45,6 +53,16 @@
         scrollJumpBtn: document.getElementById('scrollJumpBtn'),
         composerInput: document.getElementById('composerInput'),
         generateBtn: document.getElementById('generateBtn'),
+        sendBtn: document.getElementById('sendBtn'),
+        attachBtn: document.getElementById('attachBtn'),
+        attachInput: document.getElementById('attachInput'),
+        attachChip: document.getElementById('attachChip'),
+        attachChipIcon: document.getElementById('attachChipIcon'),
+        attachChipName: document.getElementById('attachChipName'),
+        attachChipMeta: document.getElementById('attachChipMeta'),
+        attachChipRemove: document.getElementById('attachChipRemove'),
+        windowPill: document.getElementById('windowPill'),
+        windowNotice: document.getElementById('windowNotice'),
         // Details panel
         panelOverlay: document.getElementById('panelOverlay'),
         detailsPanel: document.getElementById('detailsPanel'),
@@ -72,6 +90,8 @@
         // Highest message id already on screen. The conversation poll asks
         // for rows after this one instead of re-fetching the thread.
         maxMessageId: 0,
+        // A file staged by api/upload.php, waiting for Send.
+        attachment: null,
     };
 
     /** How often to look for new rows, in ms. */
@@ -357,6 +377,7 @@
         el.chatAvatar.textContent = initials(customer);
         el.chatCustomerName.textContent = fullName(customer);
         el.chatCustomerPhone.textContent = customer.phone || customer.email || 'No phone on file';
+        refreshWindowNotice();
     }
 
     function clearMessageBubbles() {
@@ -833,9 +854,19 @@
         el.composerInput.style.height = Math.min(el.composerInput.scrollHeight, 148) + 'px';
     }
 
-    /** Send is enabled only when there's text and nothing already in flight. */
+    /**
+     * Send needs something to send, an open reply window, and nothing
+     * already in flight. Draft only needs a conversation -- its whole
+     * point is to fill an empty composer.
+     */
     function syncSendButton() {
-        el.generateBtn.disabled = state.isSending || el.composerInput.value.trim() === '';
+        const hasText = el.composerInput.value.trim() !== '';
+        const hasAttachment = state.attachment !== null;
+        const open = isWindowOpen();
+
+        el.sendBtn.disabled = state.isSending || !open || (!hasText && !hasAttachment);
+        el.generateBtn.disabled = state.isSending || !state.selectedSessionId;
+        el.attachBtn.disabled = state.isSending || !state.selectedSessionId || !open;
     }
 
     el.composerInput.addEventListener('input', () => {
@@ -844,16 +875,30 @@
     });
 
     el.composerInput.addEventListener('keydown', (e) => {
-        // Cmd/Ctrl+Enter sends. Plain Enter inserts a newline, since support
-        // agents routinely paste multi-line customer messages here.
+        // Cmd/Ctrl+Enter sends. Plain Enter inserts a newline: a reply
+        // written here is often several lines long.
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            handleSend();
+            return;
+        }
+        // Cmd/Ctrl+G asks for a draft.
+        if (e.key.toLowerCase() === 'g' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             handleGenerateAnswer();
         }
     });
 
     el.generateBtn.addEventListener('click', handleGenerateAnswer);
+    el.sendBtn.addEventListener('click', handleSend);
 
+    /**
+     * Asks n8n for a suggested reply and puts it in the composer.
+     *
+     * It does not post a bubble and does not refetch: nothing is written
+     * anywhere until the agent reads the draft, edits it, and presses
+     * Send.
+     */
     async function handleGenerateAnswer() {
         if (state.isSending) return;
         if (!state.selectedSessionId) {
@@ -861,62 +906,224 @@
             return;
         }
 
-        const message = el.composerInput.value.trim();
-        if (!message) {
-            toast('Type or paste the customer\'s message first.', 'error');
-            return;
-        }
-
-        state.isSending = true;
-        el.generateBtn.disabled = true;
-        el.generateBtn.classList.add('is-loading');
-
         const sessionId = state.selectedSessionId;
 
-        el.composerInput.value = '';
-        autoGrowComposer();
-
-        // Show the typed message immediately as a "pending" bubble purely
-        // client-side -- nothing is written to Supabase from the CRM. n8n
-        // is responsible for saving both the human and AI turns to
-        // n8n_chat_history once it receives the webhook call below.
-        state.messages.push({ id: 'pending', type: 'human', content: message, pending: true });
-        renderMessages({ scroll: true });
+        state.isSending = true;
+        syncSendButton();
+        el.generateBtn.classList.add('is-loading');
         showTypingIndicator();
 
         try {
-            // Ask n8n to run the AI agent. n8n saves the human message and
-            // the AI reply to Supabase itself and responds once both are
-            // written.
-            await api(API.webhook, {
+            const data = await api(API.webhook, {
                 method: 'POST',
-                body: JSON.stringify({ session_id: sessionId, message }),
+                body: JSON.stringify({ session_id: sessionId }),
             });
 
-            hideTypingIndicator();
+            if (sessionId !== state.selectedSessionId) return;
 
-            // Re-read history from Supabase (source of truth) -- this
-            // replaces the pending bubble with the real persisted rows and
-            // highlights whatever the newest AI turn turns out to be.
-            await refreshMessages(sessionId, { scroll: true, highlightLastAi: true });
-            refreshSidebarPreview(sessionId);
-        } catch (err) {
-            hideTypingIndicator();
-
-            // Nothing was persisted, so drop the pending bubble and give
-            // the customer's text back to the composer for a retry.
-            state.messages = state.messages.filter((m) => m.id !== 'pending');
-            renderMessages({ scroll: true });
-            el.composerInput.value = message;
+            el.composerInput.value = data.draft || '';
             autoGrowComposer();
-
+            el.composerInput.focus();
+            // Cursor at the end, ready to edit.
+            const end = el.composerInput.value.length;
+            el.composerInput.setSelectionRange(end, end);
+        } catch (err) {
             toast(err.message, 'error');
         } finally {
+            hideTypingIndicator();
             state.isSending = false;
             el.generateBtn.classList.remove('is-loading');
             syncSendButton();
         }
     }
+
+    /**
+     * Delivers what is in the composer over WhatsApp.
+     */
+    async function handleSend() {
+        if (state.isSending) return;
+        if (!state.selectedSessionId) {
+            toast('Select a customer first.', 'error');
+            return;
+        }
+        if (!isWindowOpen()) {
+            toast('The 24-hour reply window has closed.', 'error');
+            return;
+        }
+
+        const text = el.composerInput.value.trim();
+        const attachment = state.attachment;
+
+        if (!text && !attachment) {
+            toast('Write a reply first.', 'error');
+            return;
+        }
+
+        const sessionId = state.selectedSessionId;
+        state.isSending = true;
+        syncSendButton();
+        el.sendBtn.classList.add('is-loading');
+
+        // Clear optimistically so the agent can start the next reply.
+        el.composerInput.value = '';
+        autoGrowComposer();
+
+        const pending = {
+            id: 'pending',
+            type: 'ai',
+            direction: 'out',
+            msg_type: attachment ? attachment.msgType : 'text',
+            content: text,
+            media_url: attachment ? attachment.previewUrl : null,
+            media_name: attachment ? attachment.name : null,
+            media_size: attachment ? attachment.size : null,
+            pending: true,
+        };
+        appendMessages([pending]);
+
+        try {
+            const payload = { session_id: sessionId, type: 'text', text };
+            if (attachment) {
+                payload.type = attachment.msgType;
+                payload.media_ref = attachment.ref;
+            }
+
+            const data = await api(API.send, { method: 'POST', body: JSON.stringify(payload) });
+
+            replacePendingBubble(data.message);
+            clearAttachment();
+            refreshSidebarPreview(sessionId);
+        } catch (err) {
+            // Nothing was delivered, so take the bubble back down and
+            // hand the text back for a retry or an edit.
+            removePendingBubble();
+            el.composerInput.value = text;
+            autoGrowComposer();
+            toast(err.message, 'error');
+        } finally {
+            state.isSending = false;
+            el.sendBtn.classList.remove('is-loading');
+            syncSendButton();
+        }
+    }
+
+    /** Swaps the optimistic bubble for the real, stored row. */
+    function replacePendingBubble(message) {
+        const node = el.chatMessages.querySelector('.bubble-row[data-message-id="pending"]');
+        state.messages = state.messages.filter((m) => m.id !== 'pending');
+
+        if (!message) {
+            node?.remove();
+            return;
+        }
+
+        state.messages.push(message);
+        trackMaxId([message]);
+
+        const fresh = buildBubbleRow(message);
+        if (node) {
+            node.replaceWith(fresh);
+        } else {
+            el.chatMessages.appendChild(fresh);
+        }
+        scrollMessagesToBottom(true);
+    }
+
+    function removePendingBubble() {
+        el.chatMessages.querySelector('.bubble-row[data-message-id="pending"]')?.remove();
+        state.messages = state.messages.filter((m) => m.id !== 'pending');
+    }
+
+    // ------------------------------------------------------------------
+    // Staged attachment
+    // ------------------------------------------------------------------
+
+    /** Drops the staged file and hides its chip. */
+    function clearAttachment() {
+        if (state.attachment?.previewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(state.attachment.previewUrl);
+        }
+        state.attachment = null;
+        el.attachChip.hidden = true;
+        el.attachChipIcon.innerHTML = '';
+        el.attachChipName.textContent = '';
+        el.attachChipMeta.textContent = '';
+        syncSendButton();
+    }
+
+    el.attachChipRemove.addEventListener('click', clearAttachment);
+
+    // ------------------------------------------------------------------
+    // 24-hour reply window
+    // ------------------------------------------------------------------
+
+    /** Seconds of free-form reply time left, from the loaded customer. */
+    function windowSecondsRemaining() {
+        const at = state.selectedCustomer?.last_inbound_at;
+        if (!at) return 0;
+        const ts = new Date(at).getTime();
+        if (Number.isNaN(ts)) return 0;
+        return Math.max(0, Math.round((ts + WINDOW_HOURS * 3600000 - Date.now()) / 1000));
+    }
+
+    function isWindowOpen() {
+        return windowSecondsRemaining() > 0;
+    }
+
+    /**
+     * Repaints the header pill and the blocking notice.
+     *
+     * A customer with no wa_id at all is a hand-created record that was
+     * never a WhatsApp conversation; there is nothing to say about a
+     * window it does not have.
+     */
+    function refreshWindowNotice() {
+        const customer = state.selectedCustomer;
+
+        if (!customer || !customer.wa_id) {
+            el.windowPill.hidden = true;
+            el.windowNotice.hidden = true;
+            syncSendButton();
+            return;
+        }
+
+        const left = windowSecondsRemaining();
+
+        if (left <= 0) {
+            el.windowPill.hidden = false;
+            el.windowPill.className = 'window-pill is-closed';
+            el.windowPill.textContent = 'replies closed';
+
+            el.windowNotice.hidden = false;
+            el.windowNotice.innerHTML = '';
+            const strong = document.createElement('strong');
+            strong.textContent = 'The 24-hour reply window has closed. ';
+            el.windowNotice.append(
+                strong,
+                document.createTextNode(
+                    'WhatsApp only allows a free-form reply within a day of the customer\'s last '
+                    + 'message. Sending now needs an approved template, which this CRM does not do.'
+                ),
+            );
+        } else {
+            const hours = Math.floor(left / 3600);
+            const mins = Math.floor((left % 3600) / 60);
+            const label = hours > 0 ? `${hours}h left` : `${mins}m left`;
+
+            el.windowPill.hidden = false;
+            el.windowPill.className = hours < 2 ? 'window-pill is-closing' : 'window-pill';
+            el.windowPill.textContent = `replies open · ${label}`;
+
+            el.windowNotice.hidden = true;
+        }
+
+        syncSendButton();
+    }
+
+    // The window drains in real time, so re-check it on a slow tick as
+    // well as on every poll -- an agent can sit on one conversation for
+    // the last hour of it.
+    setInterval(refreshWindowNotice, 60000);
 
     function showTypingIndicator() {
         hideTypingIndicator();
@@ -983,6 +1190,15 @@
             if (!data.messages || data.messages.length === 0) return;
 
             appendMessages(data.messages);
+
+            // An inbound message reopens (or extends) the reply window,
+            // so keep the header honest without a second request.
+            const lastInbound = [...data.messages].reverse()
+                .find((m) => m.direction === 'in' && m.created_at);
+            if (lastInbound && state.selectedCustomer) {
+                state.selectedCustomer.last_inbound_at = lastInbound.created_at;
+            }
+            refreshWindowNotice();
         } catch {
             /* A dropped poll is not worth a toast; the next tick retries. */
         }

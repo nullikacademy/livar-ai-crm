@@ -2,20 +2,22 @@
 /**
  * api/webhook.php
  *
- * POST /api/webhook.php   body: { "session_id": "...", "message": "..." }
+ *   POST /api/webhook.php   body: { "session_id": "..." }
+ *   ->  { "success": true, "draft": "suggested reply text" }
  *
- * Forwards the customer message to the n8n workflow, which:
- *   1. Inserts the human message into n8n_chat_history
- *   2. Runs the AI Agent
- *   3. Inserts the AI reply into n8n_chat_history
- *   4. Responds to the webhook with a small acknowledgement
+ * Asks n8n to draft a reply. Nothing more.
  *
- * The CRM never writes to n8n_chat_history itself -- n8n is the single
- * writer, Supabase is the single source of truth. This endpoint's job is
- * just to call n8n and wait; the frontend always re-reads
- * n8n_chat_history from Supabase afterwards rather than trusting this
- * response body for the actual message content. We still try to surface
- * any text n8n sends back, purely as a best-effort fallback.
+ * This used to be the write path: n8n owned n8n_chat_history and saved
+ * both turns itself. That is inverted now. The CRM is the only writer --
+ * inbound rows come from api/whatsapp_webhook.php and outbound ones from
+ * api/send.php -- and n8n is a stateless draft generator: it receives
+ * the conversation history, returns text, and touches no table. Its
+ * workflow must therefore have no Supabase insert nodes and no Postgres
+ * Chat Memory node, or history would be written twice (see README
+ * section 5).
+ *
+ * The draft is never persisted here either. It goes into the composer
+ * for the agent to edit, and only becomes a message if they press Send.
  */
 
 declare(strict_types=1);
@@ -30,22 +32,41 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_error('Method not allowed', 405);
 }
 
+/** How many past turns to send as context. */
+const DRAFT_HISTORY_LIMIT = 40;
+
 try {
     $data      = read_json_body();
     $sessionId = input_str($data, 'session_id');
-    $message   = input_str($data, 'message');
 
-    if ($sessionId === '' || $message === '') {
-        json_error('session_id and message are required', 422);
+    if ($sessionId === '') {
+        json_error('session_id is required', 422);
     }
 
-    // The customer/human message is NOT saved by the CRM -- n8n inserts
-    // both the human and AI turns itself (see api/webhook.php docblock
-    // and README "n8n workflow" section). The CRM only sends the text
-    // for the agent to act on and re-reads history afterward.
+    $customer = getCustomer($sessionId);
+    if ($customer === null) {
+        json_error('Customer not found', 404);
+    }
+
+    $history = buildHistory($sessionId);
+    if (!$history) {
+        json_error('There is nothing to reply to yet.', 422);
+    }
+
     $payload = json_encode([
         'session_id' => $sessionId,
-        'message'    => $message,
+        'history'    => $history,
+        'customer'   => [
+            'first_name'  => $customer['first_name'] ?? null,
+            'last_name'   => $customer['last_name'] ?? null,
+            'company'     => $customer['username'] ?? null,
+            'country'     => $customer['country'] ?? null,
+            'city'        => $customer['city'] ?? null,
+            'email'       => $customer['email'] ?? null,
+            'phone'       => $customer['phone'] ?? null,
+            'wa_id'       => $customer['wa_id'] ?? null,
+            'notes'       => $customer['details'] ?? null,
+        ],
     ], JSON_UNESCAPED_UNICODE);
 
     $ch = curl_init(N8N_WEBHOOK_URL);
@@ -75,26 +96,100 @@ try {
         json_error('The AI service returned an error. Please try again.', 502);
     }
 
-    // Best-effort extraction of a preview reply, tolerant of several
-    // reasonable n8n response shapes. Never fatal if this fails.
-    $preview = null;
-    $decoded = json_decode((string) $responseBody, true);
-    if (is_array($decoded)) {
-        $candidate = $decoded['reply']
-            ?? $decoded['message']
-            ?? $decoded['output']
-            ?? $decoded['content']
-            ?? null;
-        if (is_string($candidate)) {
-            $preview = $candidate;
+    $draft = extractDraft((string) $responseBody);
+    if ($draft === null) {
+        error_log("[api/webhook] could not find a draft in n8n's response: {$responseBody}");
+        json_error('The AI service did not return a draft. Please try again.', 502);
+    }
+
+    json_response(['success' => true, 'draft' => $draft]);
+} catch (SupabaseException $e) {
+    error_log('[api/webhook] ' . $e->getMessage());
+    json_error($e->getMessage(), $e->httpStatus);
+} catch (Throwable $e) {
+    error_log('[api/webhook] ' . $e->getMessage());
+    json_error('Something went wrong while generating the draft.', 500);
+}
+
+/**
+ * Builds the conversation for the agent to read.
+ *
+ * n8n no longer has a memory node reading the table, so the history has
+ * to travel with the request. Media rows become a short description --
+ * "[photo]" tells the model something arrived, which is more useful than
+ * an empty string.
+ *
+ * @return array<int, array{role: string, content: string}>
+ */
+function buildHistory(string $sessionId): array
+{
+    $messages = getMessages($sessionId, 0, DRAFT_HISTORY_LIMIT);
+    $history  = [];
+
+    foreach ($messages as $msg) {
+        $role = ($msg['direction'] ?? null) === 'out' || $msg['type'] === 'ai' ? 'assistant' : 'user';
+
+        $content = (string) $msg['content'];
+        $label   = match ($msg['msg_type'] ?? 'text') {
+            'image'    => '[photo]',
+            'video'    => '[video]',
+            'audio'    => '[voice message]',
+            'document' => '[document' . ($msg['media_name'] ? ': ' . $msg['media_name'] : '') . ']',
+            'location' => '[location' . ($msg['place_name'] ? ': ' . $msg['place_name'] : '') . ']',
+            'sticker'  => '[sticker]',
+            default    => '',
+        };
+
+        if ($label !== '') {
+            // A location's content IS its place name, which the label
+            // already carries -- don't say it twice.
+            $content = ($content !== '' && !str_contains($label, $content))
+                ? $label . ' ' . $content
+                : $label;
+        }
+        if ($content === '') {
+            continue;
+        }
+
+        $history[] = ['role' => $role, 'content' => $content];
+    }
+
+    return $history;
+}
+
+/**
+ * Pulls the draft text out of n8n's response.
+ *
+ * `draft` is what the documented workflow returns, but the AI Agent
+ * node's own output field is commonly `output` or `text`, and it is easy
+ * to wire the Respond node straight to it -- so those are accepted too
+ * rather than failing on a detail the agent cannot see from the CRM.
+ */
+function extractDraft(string $body): ?string
+{
+    $decoded = json_decode($body, true);
+
+    if (is_string($decoded)) {
+        $decoded = trim($decoded);
+        return $decoded !== '' ? $decoded : null;
+    }
+
+    // n8n often responds with a single-item array.
+    if (is_array($decoded) && array_is_list($decoded) && isset($decoded[0]) && is_array($decoded[0])) {
+        $decoded = $decoded[0];
+    }
+
+    if (!is_array($decoded)) {
+        // Not JSON at all: a plain-text Respond node body is still usable.
+        $body = trim($body);
+        return $body !== '' ? $body : null;
+    }
+
+    foreach (['draft', 'output', 'text', 'reply', 'message', 'content'] as $key) {
+        if (isset($decoded[$key]) && is_string($decoded[$key]) && trim($decoded[$key]) !== '') {
+            return trim($decoded[$key]);
         }
     }
 
-    json_response([
-        'success' => true,
-        'preview' => $preview, // may be null; frontend re-fetches from DB regardless
-    ]);
-} catch (Throwable $e) {
-    error_log('[api/webhook] ' . $e->getMessage());
-    json_error('Something went wrong while generating the answer.', 500);
+    return null;
 }
