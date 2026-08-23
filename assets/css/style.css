@@ -563,6 +563,186 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 .bubble__copy:active { background: rgba(255, 255, 255, 0.38); }
 .bubble__copy.is-copied { background: rgba(255, 255, 255, 0.42); }
 
+/* --------------------------------------------------------------------------
+   Media, location and status inside bubbles
+   -------------------------------------------------------------------------- */
+
+/* A media bubble is the frame around the media, so it drops .bubble's
+   9px 13px padding. `.bubble` has no overflow rule of its own, which is
+   why an image would otherwise square off the rounded corners. */
+.bubble--media {
+    padding: 0;
+    overflow: hidden;
+}
+
+.bubble__image {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    max-height: 380px;
+    object-fit: cover;
+    cursor: zoom-in;
+    background: var(--surface-3);
+}
+
+.bubble__video {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    max-height: 380px;
+    background: #000;
+}
+
+.bubble__audio {
+    display: block;
+    width: min(260px, 62vw);
+    margin: 8px 10px;
+}
+
+/* Document card: icon, then name over size. */
+.bubble__doc {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    min-width: 0;
+    max-width: 300px;
+    text-decoration: none;
+    color: inherit;
+    transition: background var(--t-fast) var(--ease);
+}
+.bubble__doc:hover { background: rgba(0, 0, 0, 0.05); }
+.bubble--ours .bubble__doc:hover { background: rgba(255, 255, 255, 0.14); }
+
+.bubble__doc-icon {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    color: var(--ink-2);
+}
+.bubble--ours .bubble__doc-icon {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+}
+
+.bubble__doc-body { min-width: 0; }
+.bubble__doc-name {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.bubble__doc-meta {
+    display: block;
+    margin-top: 1px;
+    font-size: 11.5px;
+    color: var(--ink-3);
+}
+.bubble--ours .bubble__doc-meta { color: rgba(255, 255, 255, 0.78); }
+
+/* Location card. No map tiles: they would need a third-party key and an
+   outbound request per bubble, so this links out to Google Maps instead. */
+.bubble__location {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    max-width: 300px;
+    text-decoration: none;
+    color: inherit;
+    transition: background var(--t-fast) var(--ease);
+}
+.bubble__location:hover { background: rgba(0, 0, 0, 0.05); }
+.bubble--ours .bubble__location:hover { background: rgba(255, 255, 255, 0.14); }
+
+.bubble__location-pin { flex-shrink: 0; margin-top: 2px; opacity: 0.85; }
+.bubble__location-name { display: block; font-size: 14px; font-weight: 600; }
+.bubble__location-address {
+    display: block;
+    margin-top: 1px;
+    font-size: 12px;
+    color: var(--ink-3);
+}
+.bubble--ours .bubble__location-address { color: rgba(255, 255, 255, 0.8); }
+
+/* Caption under an image/video/document. */
+.bubble__caption {
+    padding: 7px 12px 9px;
+    font-size: 14px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.bubble__unsupported {
+    padding: 9px 13px;
+    font-size: 13.5px;
+    font-style: italic;
+    color: var(--ink-3);
+}
+.bubble--ours .bubble__unsupported { color: rgba(255, 255, 255, 0.8); }
+
+/* Links inside a text bubble. */
+.bubble__link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.bubble--customer .bubble__link { color: var(--accent-active); }
+
+/* Delivery ticks. */
+.bubble__status {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 0 12px 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.8);
+    line-height: 1;
+}
+.bubble--media .bubble__status { padding-top: 4px; }
+.bubble__status.is-read { color: #BFEAFF; }
+.bubble__status.is-failed { color: #FFD9D9; font-weight: 600; }
+
+/* Fullscreen image viewer. */
+.lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 95;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(10, 10, 12, 0.92);
+    animation: fadeInFull var(--t-fast) var(--ease) both;
+    cursor: zoom-out;
+}
+.lightbox__image {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: var(--r-sm);
+    box-shadow: var(--shadow-3);
+}
+.lightbox__close {
+    position: absolute;
+    top: calc(16px + env(safe-area-inset-top));
+    right: 16px;
+    width: var(--tap);
+    height: var(--tap);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-full);
+    color: #fff;
+    background: rgba(255, 255, 255, 0.16);
+}
+.lightbox__close:hover { background: rgba(255, 255, 255, 0.28); }
+
 /* Typing indicator shown while n8n generates the reply */
 .typing {
     display: inline-flex;
@@ -902,6 +1082,7 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     100% { background-position: -100% 0; }
 }
 @keyframes fadeIn { to { opacity: 1; } }
+@keyframes fadeInFull { from { opacity: 0; } to { opacity: 1; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes toastIn {
     from { opacity: 0; transform: translateY(10px) scale(0.97); }

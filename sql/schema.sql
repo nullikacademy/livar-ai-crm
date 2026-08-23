@@ -179,6 +179,9 @@ as $$
             when 'document' then '📄 ' || coalesce(lm.media_name, 'Document')
             when 'location' then '📍 Location'
             when 'sticker'  then '🙂 Sticker'
+            -- Something arrived that the CRM cannot render. Still needs a
+            -- preview, or the sidebar claims there are no messages at all.
+            when 'unsupported' then '📎 Attachment'
             else coalesce(nullif(lm.content, ''), '')
         end                                        as last_message,
         lm.type                                    as last_message_type,

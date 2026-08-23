@@ -69,7 +69,14 @@
         selectedCustomer: null,
         messages: [],
         isSending: false,
+        // Highest message id already on screen. The conversation poll asks
+        // for rows after this one instead of re-fetching the thread.
+        maxMessageId: 0,
     };
+
+    /** How often to look for new rows, in ms. */
+    const POLL_MESSAGES_MS = 8000;
+    const POLL_SIDEBAR_MS = 25000;
 
     // ------------------------------------------------------------------
     // Small utilities
@@ -91,7 +98,14 @@
 
     function fullName(customer) {
         const name = [customer.first_name, customer.last_name].filter(Boolean).join(' ').trim();
-        return name || customer.username || customer.phone || 'Unnamed customer';
+        // wa_profile_name is whatever the customer calls themselves on
+        // WhatsApp. It sits below an agent-entered name but above the
+        // bare number, which is what a first contact would otherwise show.
+        return name
+            || customer.username
+            || customer.wa_profile_name
+            || customer.phone
+            || 'Unnamed customer';
     }
 
     function initials(customer) {
@@ -103,9 +117,9 @@
     }
 
     function relativeTime(idOrDate) {
-        // We only have sequential message ids for "last activity" in this
-        // schema (no timestamp column on n8n_chat_history), so we fall back
-        // to the customer's created_at when there is no message yet.
+        // n8n_chat_history now carries created_at, so the sidebar shows
+        // when the last message actually happened; the customer's own
+        // created_at is the fallback for a conversation with no messages.
         if (!idOrDate) return '';
         const date = new Date(idOrDate);
         if (isNaN(date.getTime())) return '';
@@ -225,7 +239,7 @@
             <span class="customer-item__body">
                 <span class="customer-item__top">
                     <span class="customer-item__name">${escapeHtml(fullName(customer))}</span>
-                    <span class="customer-item__time">${escapeHtml(relativeTime(customer.created_at))}</span>
+                    <span class="customer-item__time">${escapeHtml(relativeTime(customer.last_activity_at || customer.created_at))}</span>
                 </span>
                 <span class="customer-item__preview">${prefix}${preview}</span>
             </span>
@@ -291,6 +305,7 @@
 
     async function selectCustomer(sessionId, { focusComposer = false } = {}) {
         state.selectedSessionId = sessionId;
+        state.maxMessageId = 0;
         markSelectedInList(sessionId);
 
         el.app.classList.add('is-chat-open');
@@ -348,6 +363,7 @@
         el.chatMessages.querySelectorAll('.bubble-row, .chat__day-divider, .chat__empty-state').forEach((n) => n.remove());
     }
 
+    /** Full teardown and rebuild. Only for switching conversations. */
     function renderMessages({ scroll = false, highlightLastAi = false } = {}) {
         clearMessageBubbles();
 
@@ -356,6 +372,7 @@
             empty.className = 'chat__empty-state';
             empty.textContent = 'No messages yet. Start the conversation below.';
             el.chatMessages.appendChild(empty);
+            trackMaxId(state.messages);
             return;
         }
 
@@ -365,10 +382,11 @@
         state.messages.forEach((msg) => {
             const row = buildBubbleRow(msg);
             frag.appendChild(row);
-            if (msg.type === 'ai') lastAiRow = row;
+            if (isOutbound(msg)) lastAiRow = row;
         });
 
         el.chatMessages.appendChild(frag);
+        trackMaxId(state.messages);
 
         if (highlightLastAi && lastAiRow) {
             const bubble = lastAiRow.querySelector('.bubble');
@@ -378,34 +396,369 @@
         if (scroll) scrollMessagesToBottom();
     }
 
+    /**
+     * Adds rows without touching the ones already on screen.
+     *
+     * renderMessages() rebuilds everything, which with media re-requests
+     * and re-flashes every image on each poll tick. The polling path uses
+     * this instead.
+     */
+    function appendMessages(newOnes) {
+        if (!newOnes || newOnes.length === 0) return;
+
+        // The first arrival replaces the empty-state placeholder.
+        el.chatMessages.querySelector('.chat__empty-state')?.remove();
+
+        // Stay pinned to the bottom only if we were already there, so a
+        // new message can't yank the view away from someone reading back.
+        const { scrollTop, scrollHeight, clientHeight } = el.chatMessages;
+        const wasAtBottom = scrollHeight - scrollTop - clientHeight < 120;
+
+        const frag = document.createDocumentFragment();
+        newOnes.forEach((msg) => {
+            state.messages.push(msg);
+            frag.appendChild(buildBubbleRow(msg));
+        });
+        el.chatMessages.appendChild(frag);
+        trackMaxId(newOnes);
+
+        if (wasAtBottom) scrollMessagesToBottom(true);
+    }
+
+    function trackMaxId(messages) {
+        messages.forEach((m) => {
+            const id = Number(m.id);
+            if (Number.isFinite(id) && id > state.maxMessageId) state.maxMessageId = id;
+        });
+    }
+
+    /**
+     * Which side a bubble sits on.
+     *
+     * `direction` is authoritative for anything WhatsApp touched; rows
+     * written before it existed only have the LangChain `type`.
+     */
+    function isOutbound(msg) {
+        if (msg.direction === 'out') return true;
+        if (msg.direction === 'in') return false;
+        return msg.type === 'ai';
+    }
+
     function buildBubbleRow(msg) {
-        const isOurs = msg.type === 'ai';
+        const isOurs = isOutbound(msg);
         const row = document.createElement('div');
         row.className = `bubble-row ${isOurs ? 'bubble-row--ours' : 'bubble-row--customer'}`;
+        if (msg.id) row.dataset.messageId = String(msg.id);
 
         const bubble = document.createElement('div');
         bubble.className = `bubble ${isOurs ? 'bubble--ours' : 'bubble--customer'}`;
         if (msg.pending) bubble.classList.add('is-pending');
 
-        const text = document.createElement('div');
-        text.className = 'bubble__text';
-        text.textContent = msg.content;
-        bubble.appendChild(text);
+        const kind = msg.msg_type || 'text';
+        if (kind !== 'text' && kind !== 'location' && kind !== 'unsupported' && msg.media_url) {
+            bubble.classList.add('bubble--media');
+        }
+
+        switch (kind) {
+            case 'image':
+            case 'sticker':
+                buildImageBody(bubble, msg);
+                break;
+            case 'video':
+                buildVideoBody(bubble, msg);
+                break;
+            case 'audio':
+                buildAudioBody(bubble, msg);
+                break;
+            case 'document':
+                buildDocumentBody(bubble, msg);
+                break;
+            case 'location':
+                buildLocationBody(bubble, msg);
+                break;
+            case 'unsupported':
+                buildUnsupportedBody(bubble);
+                break;
+            default:
+                buildTextBody(bubble, msg);
+        }
 
         if (isOurs) {
-            const actions = document.createElement('div');
-            actions.className = 'bubble__actions';
-            const copyBtn = document.createElement('button');
-            copyBtn.type = 'button';
-            copyBtn.className = 'bubble__copy';
-            copyBtn.innerHTML = copyIconSvg() + '<span>Copy</span>';
-            copyBtn.addEventListener('click', () => copyToClipboard(msg.content, copyBtn));
-            actions.appendChild(copyBtn);
-            bubble.appendChild(actions);
+            appendStatus(bubble, msg);
+            // Copy only makes sense for something with words in it.
+            if (msg.content) appendCopyAction(bubble, msg.content);
         }
 
         row.appendChild(bubble);
         return row;
+    }
+
+    // ------------------------------------------------------------------
+    // Bubble bodies
+    //
+    // Every URL below is assigned through a DOM property (img.src = url),
+    // never interpolated into an HTML string: escapeHtml() does not
+    // escape quotes, so attribute interpolation is injectable. All of
+    // them are same-origin api/media.php?id=<int> anyway.
+    // ------------------------------------------------------------------
+
+    function buildTextBody(bubble, msg) {
+        const text = document.createElement('div');
+        text.className = 'bubble__text';
+        linkifyInto(text, msg.content || '');
+        bubble.appendChild(text);
+    }
+
+    function buildImageBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Photo');
+            return;
+        }
+        const img = document.createElement('img');
+        img.className = 'bubble__image';
+        img.loading = 'lazy';
+        img.alt = msg.content || 'Photo';
+        img.src = msg.media_url;
+        img.addEventListener('click', () => openLightbox(msg.media_url, img.alt));
+        bubble.appendChild(img);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildVideoBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Video');
+            return;
+        }
+        const video = document.createElement('video');
+        video.className = 'bubble__video';
+        video.controls = true;
+        video.preload = 'metadata';
+        video.src = msg.media_url;
+        bubble.appendChild(video);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildAudioBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Voice message');
+            return;
+        }
+        const audio = document.createElement('audio');
+        audio.className = 'bubble__audio';
+        audio.controls = true;
+        audio.preload = 'metadata';
+        audio.src = msg.media_url;
+        bubble.appendChild(audio);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildDocumentBody(bubble, msg) {
+        if (!msg.media_url) {
+            buildMissingMediaBody(bubble, 'Document');
+            return;
+        }
+        const link = document.createElement('a');
+        link.className = 'bubble__doc';
+        link.href = msg.media_url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+
+        const icon = document.createElement('span');
+        icon.className = 'bubble__doc-icon';
+        icon.innerHTML = docIconSvg();
+
+        const body = document.createElement('span');
+        body.className = 'bubble__doc-body';
+
+        const name = document.createElement('span');
+        name.className = 'bubble__doc-name';
+        name.textContent = msg.media_name || 'Document';
+
+        const meta = document.createElement('span');
+        meta.className = 'bubble__doc-meta';
+        meta.textContent = msg.media_size ? formatBytes(msg.media_size) : 'Open';
+
+        body.append(name, meta);
+        link.append(icon, body);
+        bubble.appendChild(link);
+        appendCaption(bubble, msg.content);
+    }
+
+    function buildLocationBody(bubble, msg) {
+        const link = document.createElement('a');
+        link.className = 'bubble__location';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        // Built with URLSearchParams rather than string concatenation so
+        // the coordinates can't smuggle anything into the query.
+        const params = new URLSearchParams({ q: `${msg.latitude},${msg.longitude}` });
+        link.href = `https://www.google.com/maps?${params.toString()}`;
+
+        const pin = document.createElement('span');
+        pin.className = 'bubble__location-pin';
+        pin.innerHTML = pinIconSvg();
+
+        const body = document.createElement('span');
+
+        const name = document.createElement('span');
+        name.className = 'bubble__location-name';
+        name.textContent = msg.place_name || 'Shared location';
+
+        const address = document.createElement('span');
+        address.className = 'bubble__location-address';
+        address.textContent = msg.place_address
+            || `${Number(msg.latitude).toFixed(5)}, ${Number(msg.longitude).toFixed(5)}`;
+
+        body.append(name, address);
+        link.append(pin, body);
+        bubble.appendChild(link);
+    }
+
+    function buildUnsupportedBody(bubble) {
+        const note = document.createElement('div');
+        note.className = 'bubble__unsupported';
+        note.textContent = 'Unsupported message type — open WhatsApp to view it.';
+        bubble.appendChild(note);
+    }
+
+    /** A media row whose file never made it to disk. */
+    function buildMissingMediaBody(bubble, label) {
+        bubble.classList.remove('bubble--media');
+        const note = document.createElement('div');
+        note.className = 'bubble__unsupported';
+        note.textContent = `${label} — no longer available.`;
+        bubble.appendChild(note);
+    }
+
+    function appendCaption(bubble, caption) {
+        if (!caption) return;
+        const node = document.createElement('div');
+        node.className = 'bubble__caption';
+        linkifyInto(node, caption);
+        bubble.appendChild(node);
+    }
+
+    function appendStatus(bubble, msg) {
+        if (!msg.wa_status) return;
+        const node = document.createElement('div');
+        node.className = 'bubble__status';
+
+        if (msg.wa_status === 'failed') {
+            node.classList.add('is-failed');
+            node.textContent = 'Not delivered';
+        } else if (msg.wa_status === 'read') {
+            node.classList.add('is-read');
+            node.textContent = '✓✓ Read';
+        } else if (msg.wa_status === 'delivered') {
+            node.textContent = '✓✓ Delivered';
+        } else {
+            node.textContent = '✓ Sent';
+        }
+
+        bubble.appendChild(node);
+    }
+
+    function appendCopyAction(bubble, content) {
+        const actions = document.createElement('div');
+        actions.className = 'bubble__actions';
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'bubble__copy';
+        copyBtn.innerHTML = copyIconSvg() + '<span>Copy</span>';
+        copyBtn.addEventListener('click', () => copyToClipboard(content, copyBtn));
+        actions.appendChild(copyBtn);
+        bubble.appendChild(actions);
+    }
+
+    /**
+     * Writes text into a node, turning bare URLs into anchors.
+     *
+     * Deliberately builds nodes rather than assembling HTML: the anchor
+     * text and href both go in through DOM properties, so no part of a
+     * customer's message is ever parsed as markup.
+     */
+    function linkifyInto(node, text) {
+        const pattern = /https?:\/\/[^\s<>"']+/g;
+        let lastIndex = 0;
+        let match;
+
+        while ((match = pattern.exec(text)) !== null) {
+            if (match.index > lastIndex) {
+                node.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+            }
+            // Trailing punctuation is almost never part of the link.
+            let url = match[0];
+            const trailing = url.match(/[.,;:!?)\]]+$/);
+            if (trailing) url = url.slice(0, -trailing[0].length);
+
+            const anchor = document.createElement('a');
+            anchor.className = 'bubble__link';
+            anchor.href = url;
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            anchor.textContent = url;
+            node.appendChild(anchor);
+
+            if (trailing) node.appendChild(document.createTextNode(trailing[0]));
+            lastIndex = match.index + match[0].length;
+        }
+
+        if (lastIndex < text.length) {
+            node.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }
+    }
+
+    function formatBytes(bytes) {
+        const n = Number(bytes);
+        if (!Number.isFinite(n) || n <= 0) return '';
+        if (n < 1024) return `${n} B`;
+        if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`;
+        return `${(n / 1048576).toFixed(1)} MB`;
+    }
+
+    // ------------------------------------------------------------------
+    // Lightbox
+    // ------------------------------------------------------------------
+
+    function openLightbox(url, alt) {
+        closeLightbox();
+
+        const box = document.createElement('div');
+        box.className = 'lightbox';
+        box.id = 'lightbox';
+
+        const img = document.createElement('img');
+        img.className = 'lightbox__image';
+        img.alt = alt || '';
+        img.src = url;
+        // Clicking the image itself shouldn't dismiss; clicking around it should.
+        img.addEventListener('click', (e) => e.stopPropagation());
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'lightbox__close';
+        close.setAttribute('aria-label', 'Close');
+        close.innerHTML = closeIconSvg();
+
+        box.append(img, close);
+        box.addEventListener('click', closeLightbox);
+        document.body.appendChild(box);
+    }
+
+    function closeLightbox() {
+        document.getElementById('lightbox')?.remove();
+    }
+
+    function docIconSvg() {
+        return '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+    }
+
+    function pinIconSvg() {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+    }
+
+    function closeIconSvg() {
+        return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
     }
 
     function copyIconSvg() {
@@ -583,8 +936,91 @@
         if (sessionId !== state.selectedSessionId) return;
         const data = await api(`${API.messages}?session_id=${encodeURIComponent(sessionId)}`);
         state.messages = data.messages;
+        state.maxMessageId = 0;
         renderMessages({ scroll, highlightLastAi });
     }
+
+    // ------------------------------------------------------------------
+    // Polling
+    //
+    // Messages now arrive from a phone rather than from something the
+    // agent just did, so without this an inbound WhatsApp message would
+    // never show up until the conversation was reopened.
+    // ------------------------------------------------------------------
+
+    let messagePollTimer = null;
+    let sidebarPollTimer = null;
+
+    function startPolling() {
+        stopPolling();
+        if (document.hidden) return;
+
+        messagePollTimer = setInterval(pollMessages, POLL_MESSAGES_MS);
+        sidebarPollTimer = setInterval(pollSidebar, POLL_SIDEBAR_MS);
+    }
+
+    function stopPolling() {
+        if (messagePollTimer !== null) clearInterval(messagePollTimer);
+        if (sidebarPollTimer !== null) clearInterval(sidebarPollTimer);
+        messagePollTimer = null;
+        sidebarPollTimer = null;
+    }
+
+    /** Asks only for rows newer than the last one on screen. */
+    async function pollMessages() {
+        const sessionId = state.selectedSessionId;
+        if (!sessionId || state.isSending) return;
+
+        try {
+            const params = new URLSearchParams({
+                session_id: sessionId,
+                since_id: String(state.maxMessageId),
+            });
+            const data = await api(`${API.messages}?${params.toString()}`);
+
+            // The agent may have switched conversations mid-request.
+            if (sessionId !== state.selectedSessionId) return;
+            if (!data.messages || data.messages.length === 0) return;
+
+            appendMessages(data.messages);
+        } catch {
+            /* A dropped poll is not worth a toast; the next tick retries. */
+        }
+    }
+
+    /** Refreshes page 0 of the sidebar and merges it in place. */
+    async function pollSidebar() {
+        if (state.isLoadingCustomers || state.search !== '') return;
+
+        try {
+            const params = new URLSearchParams({ limit: PAGE_SIZE, offset: 0, search: '' });
+            const data = await api(`${API.customers}?${params.toString()}`);
+
+            const seen = new Set(data.customers.map((c) => c.session_id));
+            // Keep anything already loaded further down the list, in its
+            // existing order, behind the freshly ordered first page.
+            const tail = state.customers.filter((c) => !seen.has(c.session_id));
+            state.customers = [...data.customers, ...tail];
+
+            clearCustomerListDom();
+            renderCustomers(state.customers);
+            markSelectedInList(state.selectedSessionId);
+        } catch {
+            /* Same: the next tick will catch up. */
+        }
+    }
+
+    // A background tab should not keep polling; coming back should not
+    // wait a full interval to catch up.
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopPolling();
+            return;
+        }
+        startPolling();
+        pollMessages();
+        pollSidebar();
+    });
 
     async function refreshSidebarPreview(sessionId) {
         try {
@@ -716,7 +1152,9 @@
         const typingInField = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 
         if (e.key === 'Escape') {
-            if (el.detailsPanel.classList.contains('is-open')) {
+            if (document.getElementById('lightbox')) {
+                closeLightbox();
+            } else if (el.detailsPanel.classList.contains('is-open')) {
                 closeDetailsPanel();
             } else if (el.app.classList.contains('is-chat-open') && !isDesktop()) {
                 closeChat();
@@ -805,4 +1243,5 @@
 
     syncSendButton();
     loadCustomers({ reset: true });
+    startPolling();
 })();
