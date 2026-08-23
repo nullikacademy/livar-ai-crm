@@ -64,8 +64,8 @@ sql/schema.sql is safe to run repeatedly. It:
 - creates or upgrades livar_customer;
 - extends the existing n8n_chat_history table with direction, timestamps,
   WhatsApp IDs/statuses, media metadata, and location fields;
-- adds partial unique indexes for webhook deduplication and WhatsApp customer
-  race protection;
+- adds a partial webhook-deduplication index plus a PostgREST-compatible unique
+  WhatsApp customer upsert arbiter;
 - drops and recreates get_customers_with_preview(text, int, int) because its
   RETURNS TABLE shape changed;
 - makes sidebar previews media-aware.

@@ -39,6 +39,13 @@ create index if not exists idx_livar_customer_created_at
 create unique index if not exists idx_livar_customer_wa_id
     on public.livar_customer (wa_id) where wa_id is not null;
 
+-- PostgREST emits ON CONFLICT (wa_id) for ?on_conflict=wa_id, but cannot
+-- include the predicate needed to infer the partial index above. A regular
+-- unique index is therefore the upsert arbiter. PostgreSQL unique indexes
+-- allow multiple NULL values, so customers without a WhatsApp ID still work.
+create unique index if not exists idx_livar_customer_wa_id_upsert
+    on public.livar_customer (wa_id);
+
 -- Speeds up name/username/phone/email sidebar searches. WhatsApp IDs have a
 -- dedicated btree index above because equality cannot use this expression GIN.
 create index if not exists idx_livar_customer_search

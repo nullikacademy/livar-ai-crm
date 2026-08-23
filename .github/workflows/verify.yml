@@ -33,3 +33,105 @@ jobs:
 
       - name: Check JavaScript syntax
         run: node --check assets/js/app.js
+
+      - name: Smoke-test authentication boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp config/config.example.php config/config.php
+          php -r '
+            $path = "config/config.php";
+            $config = file_get_contents($path);
+            $config = str_replace(
+                "REPLACE_WITH_A_BCRYPT_PASSWORD_HASH",
+                password_hash("ci-password", PASSWORD_BCRYPT),
+                $config
+            );
+            file_put_contents($path, $config);
+          '
+
+          php -S 127.0.0.1:8000 > /tmp/livar-php.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for attempt in {1..30}; do
+            if curl --silent --output /dev/null http://127.0.0.1:8000/login.php; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          index_status=$(curl --silent --output /tmp/index.out --dump-header /tmp/index.headers --write-out '%{http_code}' http://127.0.0.1:8000/index.php)
+          test "$index_status" = "302"
+          grep --ignore-case --quiet '^Location: login.php' /tmp/index.headers
+
+          api_status=$(curl --silent --output /tmp/api.out --write-out '%{http_code}' http://127.0.0.1:8000/api/customers.php)
+          test "$api_status" = "401"
+          grep --quiet '"error":"Authentication required"' /tmp/api.out
+
+          wrong_status=$(curl --silent --output /tmp/wrong.out --write-out '%{http_code}' --data-urlencode 'password=wrong' http://127.0.0.1:8000/login.php)
+          test "$wrong_status" = "200"
+          grep --quiet 'Incorrect password.' /tmp/wrong.out
+
+          login_status=$(curl --silent --output /tmp/login.out --dump-header /tmp/login.headers --cookie-jar /tmp/cookies --write-out '%{http_code}' --data-urlencode 'password=ci-password' http://127.0.0.1:8000/login.php)
+          test "$login_status" = "302"
+          grep --ignore-case --quiet '^Location: index.php' /tmp/login.headers
+          grep --ignore-case '^Set-Cookie: livar_crm=' /tmp/login.headers | grep --ignore-case --quiet 'Secure'
+          grep --ignore-case '^Set-Cookie: livar_crm=' /tmp/login.headers | grep --ignore-case --quiet 'HttpOnly'
+          grep --ignore-case '^Set-Cookie: livar_crm=' /tmp/login.headers | grep --ignore-case --quiet 'SameSite=Lax'
+
+          session_id=$(awk -F '\t' '$6 == "livar_crm" { print $7 }' /tmp/cookies | tail -n 1)
+          test -n "$session_id"
+          app_status=$(curl --silent --output /tmp/app.out --write-out '%{http_code}' --header "Cookie: livar_crm=$session_id" http://127.0.0.1:8000/index.php)
+          test "$app_status" = "200"
+          grep --quiet 'id="app"' /tmp/app.out
+
+  schema:
+    name: PostgreSQL schema is re-runnable
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4.4.0
+
+      - name: Create Supabase roles
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c 'create role anon; create role authenticated; create role service_role;'
+
+      - name: Apply schema twice
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec -i "$POSTGRES_CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < sql/schema.sql
+          docker exec -i "$POSTGRES_CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < sql/schema.sql
+
+      - name: Verify WhatsApp upsert arbiter
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "
+            insert into public.livar_customer (session_id, wa_id)
+            values ('wa_971500000000', '971500000000')
+            on conflict (wa_id) do update
+            set session_id = excluded.session_id;
+          "
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "
+            insert into public.livar_customer (session_id, wa_id)
+            values ('wa_971500000000', '971500000000')
+            on conflict (wa_id) do update
+            set session_id = excluded.session_id;
+          "
