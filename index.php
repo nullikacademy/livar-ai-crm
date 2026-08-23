@@ -4,6 +4,12 @@
  */
 declare(strict_types=1);
 
+require_once __DIR__ . '/config/auth.php';
+
+// Page load, not an API call: unauthenticated visitors get redirected to
+// the login form rather than a JSON 401.
+require_auth(false);
+
 /**
  * Appends the file's last-modified time to an asset URL so browsers pick up
  * changes immediately after an upload instead of serving a stale cached copy.

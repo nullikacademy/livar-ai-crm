@@ -5,7 +5,9 @@
     Require all denied
 </FilesMatch>
 
-<IfModule mod_headers.set>
+# The module is mod_headers.c -- an <IfModule mod_headers.set> block never
+# matches, so before this fix none of these headers were ever sent.
+<IfModule mod_headers.c>
     Header set X-Content-Type-Options "nosniff"
     Header set X-Frame-Options "SAMEORIGIN"
     Header set Referrer-Policy "strict-origin-when-cross-origin"

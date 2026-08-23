@@ -46,9 +46,12 @@ const SUPABASE_SERVICE_KEY = 'REPLACE_WITH_YOUR_SERVICE_ROLE_KEY';
 // ------------------------------------------------------------------
 
 /**
- * The webhook that runs the AI agent. This n8n workflow is responsible
- * for saving BOTH the human message and the AI reply into
- * n8n_chat_history -- the CRM only reads that table.
+ * The webhook that runs the AI agent.
+ *
+ * n8n is a STATELESS DRAFT GENERATOR: the CRM posts the conversation
+ * history to it, n8n runs the agent and returns { "draft": "..." }.
+ * It must not write to n8n_chat_history -- the CRM owns that table.
+ * See README section 5 for the workflow.
  */
 const N8N_WEBHOOK_URL = 'https://your-n8n-host.example.com/webhook/your-webhook-uuid';
 
@@ -59,7 +62,65 @@ const N8N_WEBHOOK_URL = 'https://your-n8n-host.example.com/webhook/your-webhook-
 const N8N_TIMEOUT_SECONDS = 45;
 
 // ------------------------------------------------------------------
-// 3. Interface
+// 3. Sign-in
+// ------------------------------------------------------------------
+
+/**
+ * The one shared password for the CRM, stored as a password_hash() string
+ * -- NEVER the plaintext password. Generate it on any machine with PHP:
+ *
+ *     php -r "echo password_hash('your-password-here', PASSWORD_DEFAULT), PHP_EOL;"
+ *
+ * Paste the whole "$2y$..." output below. Everyone who signs in shares
+ * this one password; there is no user table.
+ */
+const CRM_PASSWORD_HASH = 'REPLACE_WITH_A_PASSWORD_HASH';
+
+// ------------------------------------------------------------------
+// 4. WhatsApp (360dialog Cloud API)
+// ------------------------------------------------------------------
+
+/**
+ * Your 360dialog API key (Partner Hub / Client Hub -> your WABA number).
+ * Sent as the D360-API-KEY header on every call.
+ */
+const D360_API_KEY = 'REPLACE_WITH_YOUR_360DIALOG_API_KEY';
+
+/**
+ * 360dialog's Cloud-API-compatible base URL. Only change this if
+ * 360dialog tells you to.
+ */
+const D360_BASE_URL = 'https://waba-v2.360dialog.io';
+
+/**
+ * A long random string that authenticates the inbound webhook.
+ *
+ * 360dialog does not sign its webhook calls, so the URL you register with
+ * them is the credential:
+ *
+ *     https://your-crm.example.com/api/whatsapp_webhook.php?token=<this>
+ *
+ * Generate one with:
+ *     php -r "echo bin2hex(random_bytes(24)), PHP_EOL;"
+ */
+const WHATSAPP_WEBHOOK_TOKEN = 'REPLACE_WITH_A_LONG_RANDOM_TOKEN';
+
+/**
+ * Largest media file the CRM will download from, or upload to, WhatsApp.
+ * 16 MB matches WhatsApp's own limit for video/audio/documents.
+ */
+const WHATSAPP_MAX_MEDIA_BYTES = 16 * 1024 * 1024;
+
+/**
+ * WhatsApp only allows free-form replies for 24 hours after the
+ * customer's last inbound message. Outside that window a business must
+ * use an approved template, which this CRM does not send -- so it blocks
+ * sending instead. Leave at 24 unless Meta changes the rule.
+ */
+const WHATSAPP_WINDOW_HOURS = 24;
+
+// ------------------------------------------------------------------
+// 5. Interface
 // ------------------------------------------------------------------
 
 /** How many customers to load per page in the sidebar (infinite scroll). */

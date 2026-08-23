@@ -22,6 +22,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../config/db_functions.php';
 require_once __DIR__ . '/../config/app.php';
+require_once __DIR__ . '/../config/auth.php';
+
+require_auth();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_error('Method not allowed', 405);

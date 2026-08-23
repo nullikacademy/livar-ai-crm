@@ -828,6 +828,55 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 .toast--error { background: var(--danger); }
 
 /* --------------------------------------------------------------------------
+   Login (login.php)
+   -------------------------------------------------------------------------- */
+
+.login {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--surface-2);
+}
+
+.login__card {
+    width: 100%;
+    max-width: 360px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 26px 24px 24px;
+    border-radius: var(--r-lg);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-2);
+    animation: riseIn var(--t-base) var(--ease) both;
+}
+
+.login__brand { display: flex; flex-direction: column; line-height: 1.1; }
+.login__logo { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
+.login__logo-sub { font-size: 12px; font-weight: 500; color: var(--ink-3); }
+
+.login__intro {
+    margin: -4px 0 0;
+    font-size: 14px;
+    color: var(--ink-2);
+}
+
+.login__error {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    background: #FEF2F2;
+    border: 1px solid #FECACA;
+    color: var(--danger);
+    font-size: 13.5px;
+    font-weight: 500;
+}
+
+/* --------------------------------------------------------------------------
    Animations
    -------------------------------------------------------------------------- */
 
