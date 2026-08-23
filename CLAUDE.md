@@ -51,6 +51,12 @@ README** — the template stays placeholders-only.
   `realpath()` and asserts they sit inside the media root. Filenames are
   server-generated hex and extensions come from a mime allowlist — never
   from anything a sender supplied.
+- **`api/health.php` reports failures instead of raising them.** It is the
+  one place that turns a broken dependency into a description rather than
+  an exception, so its checks must be honest: an unproven check is `warn`,
+  never `ok`, and a check that could not run says so instead of guessing
+  a cause. It must never return a key, token or hash — presence only, and
+  the webhook token is shown as a fingerprint.
 - **Errors:** log the real cause with `error_log('[Supabase] ...')` or
   `error_log('[WhatsApp] ...')` and return a generic message to the
   browser via `json_error()`. The one exception is `api/send.php`, which

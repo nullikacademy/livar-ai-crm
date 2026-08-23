@@ -161,12 +161,18 @@ final class Supabase
     /**
      * Calls a Postgres function exposed via PostgREST (POST /rpc/<fn>).
      *
+     * $query takes the same params a table read does -- notably `select`,
+     * which PostgREST validates against the function's return type even
+     * when it returns no rows. That is the only way to check a function's
+     * shape on an empty table.
+     *
      * @param array<string, mixed> $args
+     * @param array<string, string> $query
      * @return array<int, array<string, mixed>>
      */
-    public function rpc(string $functionName, array $args = []): array
+    public function rpc(string $functionName, array $args = [], array $query = []): array
     {
-        [$body] = $this->request('POST', 'rpc/' . $functionName, [], $args);
+        [$body] = $this->request('POST', 'rpc/' . $functionName, $query, $args);
         return is_array($body) ? $body : [];
     }
 

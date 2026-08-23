@@ -300,6 +300,85 @@ final class WhatsApp
     }
 
     // -----------------------------------------------------------------
+    // Health probes
+    //
+    // These are the only calls that REPORT a failure instead of throwing
+    // one: the settings page needs to show what happened, including the
+    // status code, rather than get an exception it has to translate back.
+    // -----------------------------------------------------------------
+
+    /**
+     * Checks whether the API key is accepted, without sending anything.
+     *
+     * There is no ping endpoint, so this asks for a media id that cannot
+     * exist. A key that works gets 404 (or 400) from Meta with an error
+     * body; a key that doesn't gets 401/403 before the id is ever looked
+     * up. That difference is the whole test.
+     *
+     * @return array{status: int, body: string, error: string}
+     */
+    public function probeAuth(): array
+    {
+        [$body, $status, ] = $this->rawGetQuiet($this->baseUrl . '/0');
+        return ['status' => $status, 'body' => mb_substr($body, 0, 400), 'error' => ''];
+    }
+
+    /**
+     * Reads back the webhook URL currently registered with 360dialog, so
+     * the settings page can tell you whether it matches the one this
+     * install actually answers on -- a mismatch is the single most common
+     * reason inbound messages silently never arrive.
+     *
+     * @return array{status: int, url: string, body: string}
+     */
+    public function webhookConfig(): array
+    {
+        [$body, $status, ] = $this->rawGetQuiet($this->baseUrl . '/v1/configs/webhook');
+
+        $url     = '';
+        $decoded = json_decode($body, true);
+        if (is_array($decoded)) {
+            $candidate = $decoded['url'] ?? $decoded['webhook']['url'] ?? '';
+            if (is_string($candidate)) {
+                $url = $candidate;
+            }
+        }
+
+        return ['status' => $status, 'url' => $url, 'body' => mb_substr($body, 0, 400)];
+    }
+
+    /**
+     * Like rawGet(), but returns transport failures as status 0 instead
+     * of throwing. Only the probes above use it.
+     *
+     * @return array{0: string, 1: int, 2: string}
+     */
+    private function rawGetQuiet(string $url): array
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER     => ['D360-API-KEY: ' . $this->apiKey],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 6,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+
+        $raw    = curl_exec($ch);
+        $errno  = curl_errno($ch);
+        $error  = curl_error($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($errno !== 0) {
+            error_log("[WhatsApp] probe curl error ({$errno}): {$error}");
+            return ['', 0, $error];
+        }
+
+        return [(string) $raw, $status, ''];
+    }
+
+    // -----------------------------------------------------------------
     // Internals
     // -----------------------------------------------------------------
 

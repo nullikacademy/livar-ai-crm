@@ -149,8 +149,29 @@ your PHP error log for lines starting with `[WhatsApp]`.
 
 ### If something doesn't work
 
-The app logs the real underlying error and shows only a generic message in
-the browser. Check your PHP error log — on cPanel that's **Metrics → Errors**
+**Open the gear icon in the sidebar first** — `settings.php` checks every
+connection live and usually names the problem outright. It tests the
+configuration, Supabase, whether `sql/schema.sql` has actually been run,
+the 360dialog API key, whether the webhook registered with 360dialog
+points at *this* install, n8n, the media directory and the PHP
+environment. Each row says what is wrong and what to do about it.
+
+A few notes on how to read it:
+
+- **Check** (amber) means reachable but unconfirmed — not necessarily
+  broken. For example, not every 360dialog plan exposes the endpoint that
+  reports the registered webhook URL.
+- The page never shows a key or token. The webhook URL appears with its
+  token replaced by a short fingerprint, which is still enough to compare
+  what is registered against what this install answers on.
+- **Run a live draft test** is separate because it actually runs your n8n
+  workflow and therefore costs a model call. Nothing on the page does that
+  unless you click it.
+- The page only reads. Settings are still edited in `config/config.php`.
+
+If the page itself will not load, or you need the underlying detail, the
+app logs the real error and shows only a generic message in the browser.
+Check your PHP error log — on cPanel that's **Metrics → Errors**
 or `public_html/error_log` — for lines starting with `[Supabase]` or
 `[WhatsApp]`. Common ones:
 
@@ -193,9 +214,11 @@ and reached over HTTPS — so you can ignore it entirely.
     upload.php          POST — stage an outbound attachment
     media.php           GET  — stream a stored media file
     webhook.php         POST — ask n8n for a draft reply
+    health.php          GET  — one connection check per request
 /assets
     css/style.css       mobile-first styles
-    js/app.js           all frontend logic
+    js/app.js           all inbox logic
+    js/settings.js      drives the connection-health page
 /components
     sidebar.php, chat.php, customer_form.php
 /storage
@@ -204,6 +227,7 @@ and reached over HTTPS — so you can ignore it entirely.
     media/outbox/…      staged outbound media (gitignored)
 index.php               the app (behind login)
 login.php               sign in; login.php?logout=1 signs out
+settings.php            connection health — read-only diagnostics
 sql/schema.sql
 ```
 
