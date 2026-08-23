@@ -1,0 +1,14 @@
+# Local configuration — holds the Supabase service_role secret key.
+# Never commit this: copy config/config.example.php to config/config.php instead.
+/config/config.php
+
+# PHP / server
+error_log
+*.log
+
+# Editors & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

@@ -1,0 +1,21 @@
+# LiVAR CRM — Apache config
+
+# Never let config/ or sql/ be served directly.
+<FilesMatch "\.(sql)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.set>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Sensible caching for static assets.
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/css "access plus 1 week"
+    ExpiresByType application/javascript "access plus 1 week"
+</IfModule>
+
+Options -Indexes
