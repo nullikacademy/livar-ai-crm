@@ -388,7 +388,7 @@ function insertWhatsAppMessage(string $sessionId, array $fields): ?array
     ];
 
     foreach ([
-        'wa_message_id', 'wa_status', 'wa_error',
+        'wa_message_id', 'wa_status', 'wa_error', 'wa_media_id',
         'media_path', 'media_mime', 'media_size', 'media_name',
         'latitude', 'longitude', 'place_name', 'place_address',
     ] as $optional) {

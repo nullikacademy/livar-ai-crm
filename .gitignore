@@ -12,3 +12,8 @@ error_log
 .DS_Store
 Thumbs.db
 *.swp
+
+# Downloaded/staged WhatsApp media. Never committed: it is customer
+# content, it grows without bound, and storage/.htaccess is the only
+# part of storage/ that belongs in git.
+/storage/media/

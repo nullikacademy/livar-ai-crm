@@ -79,6 +79,10 @@ alter table public.n8n_chat_history
     add column if not exists wa_status     text,          -- sent|delivered|read|failed
     add column if not exists wa_error      text,
     add column if not exists msg_type      text,          -- text|image|video|audio|document|location|sticker|unsupported
+    -- The provider's media id, kept so api/media.php can re-download a
+    -- file the webhook never managed to fetch. Meta expires media after
+    -- roughly 30 days, after which this is only a record of what was.
+    add column if not exists wa_media_id   text,
     add column if not exists media_path    text,
     add column if not exists media_mime    text,
     add column if not exists media_size    bigint,
