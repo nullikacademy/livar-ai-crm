@@ -15,7 +15,7 @@
     const API = {
         customers: 'api/customers.php',
         messages: 'api/messages.php',
-        webhook: 'api/webhook.php',
+        draft: 'api/draft.php',
         send: 'api/send.php',
         upload: 'api/upload.php',
     };
@@ -914,7 +914,7 @@
         showTypingIndicator();
 
         try {
-            const data = await api(API.webhook, {
+            const data = await api(API.draft, {
                 method: 'POST',
                 body: JSON.stringify({ session_id: sessionId }),
             });

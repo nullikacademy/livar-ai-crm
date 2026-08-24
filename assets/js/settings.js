@@ -12,15 +12,27 @@
     'use strict';
 
     const API_HEALTH = 'api/health.php';
+    const API_SETTINGS = 'api/settings.php';
 
     const el = {
         list: document.getElementById('healthList'),
         summary: document.getElementById('healthSummary'),
         recheckBtn: document.getElementById('recheckBtn'),
-        n8nLiveBtn: document.getElementById('n8nLiveBtn'),
-        n8nLiveResult: document.getElementById('n8nLiveResult'),
+        aiLiveBtn: document.getElementById('aiLiveBtn'),
+        aiLiveResult: document.getElementById('aiLiveResult'),
         toastStack: document.getElementById('toastStack'),
+        // AI settings form
+        aiForm: document.getElementById('aiForm'),
+        aiModel: document.getElementById('aiModel'),
+        aiModelList: document.getElementById('aiModelList'),
+        aiModelHelp: document.getElementById('aiModelHelp'),
+        aiPrompt: document.getElementById('aiPrompt'),
+        aiSaveBtn: document.getElementById('aiSaveBtn'),
+        aiResetBtn: document.getElementById('aiResetBtn'),
     };
+
+    /** Filled from the server so "Restore default" matches PHP exactly. */
+    let defaults = {};
 
     const STATUS_LABEL = { ok: 'OK', warn: 'Check', fail: 'Problem', pending: 'Checking…' };
 
@@ -32,8 +44,8 @@
         setTimeout(() => node.remove(), 2900);
     }
 
-    async function api(url) {
-        const res = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+    async function api(url, options = {}) {
+        const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
         let data;
         try {
             data = await res.json();
@@ -197,26 +209,95 @@
 
     el.recheckBtn.addEventListener('click', runAll);
 
-    el.n8nLiveBtn.addEventListener('click', async () => {
-        el.n8nLiveBtn.disabled = true;
-        el.n8nLiveResult.hidden = false;
-        applyResult(el.n8nLiveResult, {
+    el.aiLiveBtn.addEventListener('click', async () => {
+        el.aiLiveBtn.disabled = true;
+        el.aiLiveResult.hidden = false;
+        applyResult(el.aiLiveResult, {
             label: 'Live draft test',
             status: 'pending',
-            summary: 'Asking n8n for a draft… this can take up to 45 seconds.',
+            summary: 'Asking OpenAI for a draft…',
             detail: [],
             hint: '',
         });
 
         try {
-            const data = await api(`${API_HEALTH}?check=n8n_live`);
-            if (data) applyResult(el.n8nLiveResult, data.result);
+            const data = await api(`${API_HEALTH}?check=ai_live`);
+            if (data) applyResult(el.aiLiveResult, data.result);
         } catch (err) {
-            applyError(el.n8nLiveResult, 'Live draft test', err.message);
+            applyError(el.aiLiveResult, 'Live draft test', err.message);
         } finally {
-            el.n8nLiveBtn.disabled = false;
+            el.aiLiveBtn.disabled = false;
         }
     });
 
+    // ------------------------------------------------------------------
+    // AI settings form
+    // ------------------------------------------------------------------
+
+    async function loadSettings() {
+        try {
+            const data = await api(API_SETTINGS);
+            if (!data) return;
+
+            defaults = data.defaults || {};
+            el.aiModel.value = data.settings.ai_model || '';
+            el.aiPrompt.value = data.settings.ai_system_prompt || '';
+
+            // Autocomplete from the account's real model list. Free text
+            // still works, so an empty list only costs the suggestions.
+            el.aiModelList.textContent = '';
+            (data.models || []).forEach((id) => {
+                const option = document.createElement('option');
+                option.value = id;
+                el.aiModelList.appendChild(option);
+            });
+
+            if (!data.models || data.models.length === 0) {
+                el.aiModelHelp.textContent =
+                    'Could not list models from OpenAI — check the API key below. '
+                    + 'You can still type a model id by hand.';
+            }
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    }
+
+    el.aiForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        el.aiSaveBtn.disabled = true;
+        el.aiSaveBtn.textContent = 'Saving…';
+
+        try {
+            const data = await api(API_SETTINGS, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    ai_model: el.aiModel.value.trim(),
+                    ai_system_prompt: el.aiPrompt.value,
+                }),
+            });
+
+            if (data) {
+                // Show what was actually stored, so saving a blank prompt
+                // visibly comes back as the restored default.
+                el.aiModel.value = data.settings.ai_model || '';
+                el.aiPrompt.value = data.settings.ai_system_prompt || '';
+                toast('AI settings saved.');
+            }
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            el.aiSaveBtn.disabled = false;
+            el.aiSaveBtn.textContent = 'Save';
+        }
+    });
+
+    el.aiResetBtn.addEventListener('click', () => {
+        el.aiPrompt.value = defaults.ai_system_prompt || '';
+        el.aiModel.value = defaults.ai_model || '';
+        toast('Defaults restored — press Save to keep them.');
+    });
+
+    loadSettings();
     runAll();
 })();

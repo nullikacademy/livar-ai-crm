@@ -172,7 +172,7 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
     $query = [
         'session_id' => 'eq.' . $sessionId,
         'select'     => 'id,session_id,message,created_at,direction,wa_status,msg_type,'
-                      . 'media_path,media_mime,media_size,media_name,'
+                      . 'media_path,media_mime,media_size,media_name,ai_caption,'
                       . 'latitude,longitude,place_name,place_address',
         'limit'      => (string) $limit,
     ];
@@ -221,6 +221,12 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
             'media_mime'    => $row['media_mime'] ?? null,
             'media_size'    => isset($row['media_size']) ? (int) $row['media_size'] : null,
             'media_name'    => $row['media_name'] ?? null,
+            'ai_caption'    => $row['ai_caption'] ?? null,
+
+            // Server-side only: the draft builder needs the file on disk
+            // to attach a real image. api/messages.php strips this before
+            // it reaches the browser -- a disk path must never leave here.
+            '_media_path'   => $row['media_path'] ?? null,
 
             'latitude'      => isset($row['latitude']) ? (float) $row['latitude'] : null,
             'longitude'     => isset($row['longitude']) ? (float) $row['longitude'] : null,
@@ -468,6 +474,103 @@ function setMessageMedia(int $id, string $path, string $mime, int $size): void
         'media_mime' => $mime,
         'media_size' => $size,
     ]);
+}
+
+// ---------------------------------------------------------------------
+// Editable settings (livar_settings)
+// ---------------------------------------------------------------------
+
+/**
+ * Defaults for anything the settings page can edit.
+ *
+ * These are the values a fresh install runs on, so the CRM works before
+ * anyone opens the settings page. A row in livar_settings overrides one.
+ */
+const SETTING_DEFAULTS = [
+    'ai_model'         => 'gpt-4o-mini',
+    'ai_system_prompt' => <<<'PROMPT'
+You are a sales and support agent for LiVAR Packaging Solutions, replying to
+customers on WhatsApp.
+
+Write the reply itself and nothing else — no preamble, no "here is a draft",
+no sign-off block. What you write goes straight into an agent's composer for
+them to edit and send.
+
+- Match the customer's language.
+- Be brief and concrete. WhatsApp is not email.
+- Give prices, sizes and lead times only when they appear in the conversation
+  or the customer's notes. Never invent a figure.
+- If something needs a person — a custom quote, a complaint, a payment issue —
+  say you are checking with the team rather than guessing.
+PROMPT,
+];
+
+/**
+ * Reads every editable setting, with defaults filled in.
+ *
+ * One request per page load rather than one per key: there are only a
+ * handful, and the settings page wants them all anyway.
+ *
+ * @return array<string, string>
+ */
+function getSettings(): array
+{
+    static $cache = null;
+    if ($cache !== null) {
+        return $cache;
+    }
+
+    $values = SETTING_DEFAULTS;
+
+    try {
+        $result = Supabase::client()->get('livar_settings', ['select' => 'key,value']);
+        foreach ($result['rows'] as $row) {
+            $key = (string) ($row['key'] ?? '');
+            // A stored empty string means "reset to default", not "blank".
+            if ($key !== '' && isset($values[$key]) && trim((string) $row['value']) !== '') {
+                $values[$key] = (string) $row['value'];
+            }
+        }
+    } catch (SupabaseException $e) {
+        // Missing table on an un-migrated database, or Supabase down. The
+        // defaults still let drafting work, so this must not be fatal.
+        error_log('[Supabase] could not read livar_settings, using defaults: ' . $e->getMessage());
+    }
+
+    return $cache = $values;
+}
+
+/**
+ * Reads one setting.
+ */
+function getSetting(string $key): string
+{
+    return getSettings()[$key] ?? '';
+}
+
+/**
+ * Writes one setting. An empty value deletes the override, so the
+ * default in SETTING_DEFAULTS applies again.
+ */
+function setSetting(string $key, string $value): void
+{
+    if (!array_key_exists($key, SETTING_DEFAULTS)) {
+        throw new InvalidArgumentException('Unknown setting: ' . $key);
+    }
+
+    Supabase::client()->upsert('livar_settings', [
+        'key'        => $key,
+        'value'      => trim($value),
+        'updated_at' => gmdate('c'),
+    ], 'key');
+}
+
+/**
+ * Stores the vision model's one-line description of a photo.
+ */
+function setMessageCaption(int $id, string $caption): void
+{
+    Supabase::client()->patch('n8n_chat_history', ['id' => 'eq.' . $id], ['ai_caption' => $caption]);
 }
 
 /**

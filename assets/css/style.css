@@ -1265,6 +1265,7 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 
 .settings__section { margin-top: 28px; }
+.settings__section--first { margin-top: 4px; }
 .settings__section h2 {
     margin: 0 0 4px;
     font-size: 14px;
@@ -1302,6 +1303,63 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     background: var(--surface-3);
 }
 .settings__footer a { color: var(--accent-active); }
+
+/* AI settings form */
+.ai-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--line);
+}
+
+.ai-form textarea {
+    width: 100%;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    border-radius: var(--r-sm);
+    padding: 11px 12px;
+    /* The prompt is prose but it is also configuration: a monospace face
+       makes trailing whitespace and stray characters visible. */
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    resize: vertical;
+    min-height: 180px;
+    transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.ai-form textarea:focus,
+.ai-form input:focus {
+    outline: none;
+    background: var(--surface);
+    border-color: var(--accent);
+}
+
+.ai-form input[type="text"] {
+    width: 100%;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    border-radius: var(--r-sm);
+    padding: 11px 12px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 14px;
+    transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.field__help {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ink-3);
+}
+
+.ai-form__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
 
 /* One-line verdict above the list. */
 .health-summary {

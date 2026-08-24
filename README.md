@@ -2,9 +2,10 @@
 
 A mobile-first, WhatsApp-style CRM for customer support and sales — and a
 real WhatsApp inbox. Messages from customers arrive by webhook from
-**360dialog**, replies go out over the same channel, and n8n drafts each
-reply for an agent to edit before sending. PHP + PostgreSQL (Supabase) on
-the backend, vanilla HTML/CSS/JS on the front — no build step.
+**360dialog**, replies go out over the same channel, and OpenAI drafts
+each reply for an agent to edit before sending. PHP + PostgreSQL
+(Supabase) on the backend, vanilla HTML/CSS/JS on the front — no build
+step.
 
 ## 1. Requirements
 
@@ -13,6 +14,7 @@ the backend, vanilla HTML/CSS/JS on the front — no build step.
 - A Supabase PostgreSQL database with the two tables + one SQL function
   described below
 - A **360dialog** WhatsApp Business account and its API key
+- An **OpenAI** API key, for drafting replies and describing photos
 - Apache or Nginx (an `.htaccess` is included for Apache)
 - A writable `storage/` directory for downloaded media
 
@@ -105,12 +107,15 @@ Generate the webhook token with:
 php -r "echo bin2hex(random_bytes(24)), PHP_EOL;"
 ```
 
-#### n8n
+#### OpenAI
 
 ```php
-const N8N_WEBHOOK_URL     = 'https://your-n8n-host.example.com/webhook/your-webhook-uuid';
-const N8N_TIMEOUT_SECONDS = 45;
+const OPENAI_API_KEY  = 'sk-...';
+const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 ```
+
+The **model** and the **system prompt** are deliberately not here — they
+live in the database and are edited on the settings page. See section 5.
 
 That's the whole configuration. There is no `.env` file, no `secrets.php`,
 and no environment variables or `SetEnv` directives to set — which is
@@ -153,7 +158,7 @@ your PHP error log for lines starting with `[WhatsApp]`.
 connection live and usually names the problem outright. It tests the
 configuration, Supabase, whether `sql/schema.sql` has actually been run,
 the 360dialog API key, whether the webhook registered with 360dialog
-points at *this* install, n8n, the media directory and the PHP
+points at *this* install, OpenAI, the media directory and the PHP
 environment. Each row says what is wrong and what to do about it.
 
 A few notes on how to read it:
@@ -164,16 +169,17 @@ A few notes on how to read it:
 - The page never shows a key or token. The webhook URL appears with its
   token replaced by a short fingerprint, which is still enough to compare
   what is registered against what this install answers on.
-- **Run a live draft test** is separate because it actually runs your n8n
-  workflow and therefore costs a model call. Nothing on the page does that
-  unless you click it.
-- The page only reads. Settings are still edited in `config/config.php`.
+- **Run a live draft test** is separate because it really calls OpenAI
+  and therefore costs a model call. Nothing on the page does that unless
+  you click it.
+- The AI model and prompt are editable here; API keys are not, and stay
+  in `config/config.php`.
 
 If the page itself will not load, or you need the underlying detail, the
 app logs the real error and shows only a generic message in the browser.
 Check your PHP error log — on cPanel that's **Metrics → Errors**
-or `public_html/error_log` — for lines starting with `[Supabase]` or
-`[WhatsApp]`. Common ones:
+or `public_html/error_log` — for lines starting with `[Supabase]`,
+`[WhatsApp]` or `[AI]`. Common ones:
 
 | Log line | Cause | Fix |
 |---|---|---|
@@ -202,6 +208,7 @@ and reached over HTTPS — so you can ignore it entirely.
     load_config.php     loads config.php, with a clear error if it's missing
     database.php        Supabase REST client (curl-based)
     whatsapp.php        360dialog Cloud API client (curl-based)
+    ai.php              OpenAI client (curl-based) — chat and vision
     media.php           media store layout, mime allowlist, path safety
     auth.php            shared-password sessions; require_auth()
     app.php             small request/response helpers
@@ -213,7 +220,8 @@ and reached over HTTPS — so you can ignore it entirely.
     send.php            POST — deliver a message over WhatsApp
     upload.php          POST — stage an outbound attachment
     media.php           GET  — stream a stored media file
-    webhook.php         POST — ask n8n for a draft reply
+    draft.php           POST — ask OpenAI for a draft reply
+    settings.php        GET/PUT — the editable AI settings
     health.php          GET  — one connection check per request
 /assets
     css/style.css       mobile-first styles
@@ -227,7 +235,7 @@ and reached over HTTPS — so you can ignore it entirely.
     media/outbox/…      staged outbound media (gitignored)
 index.php               the app (behind login)
 login.php               sign in; login.php?logout=1 signs out
-settings.php            connection health — read-only diagnostics
+settings.php            AI prompt/model + connection health
 sql/schema.sql
 ```
 
@@ -270,9 +278,10 @@ message appears without a reload. Both pause while the tab is hidden.
 
 ### A reply goes out
 
-- **Draft** posts the conversation history and customer context to
-  `api/webhook.php`, which asks n8n and returns `{ draft }`. The draft goes
-  into the composer for the agent to edit. Nothing is written anywhere.
+- **Draft** sends the conversation history and customer context to
+  `api/draft.php`, which calls OpenAI and returns `{ draft }`. The draft
+  goes into the composer for the agent to edit. Nothing is written
+  anywhere. See section 5.
 - **Send** POSTs to `api/send.php`, which checks the 24-hour window,
   delivers over 360dialog, and stores the row with `direction='out'` and
   the provider's message id. Delivery receipts arrive later as
@@ -314,115 +323,91 @@ cannot be sent to until a real message links a number to it. The details
 panel edits the profile fields; `last_inbound_at` is deliberately not one
 of them, since it gates sending.
 
-## 5. n8n workflow — step by step
+## 5. The AI
 
-This is the workflow the **Draft** button calls. Build it as a separate
-n8n workflow behind the webhook URL configured in `N8N_WEBHOOK_URL`.
+Drafting runs inside this app. There is no n8n in the path: the CRM
+already owns the conversation, so it owns the prompt and the model call
+too — one fewer service to be down, and one fewer place the prompt can
+drift out of sync with reality.
 
-> **The CRM now owns `n8n_chat_history`.** n8n is a stateless draft
-> generator: it receives the conversation, returns text, and writes to no
-> table. If you are upgrading an older workflow, **delete both Supabase
-> insert nodes and the Postgres Chat Memory node** — the CRM already
-> stores every turn, and leaving them in would write each message twice.
+### What you configure, and where
 
-### Step 1 — Webhook node
-- Node: **Webhook**
-- HTTP Method: `POST`
-- Path: the UUID from your URL — the same one you put in `N8N_WEBHOOK_URL`
-- Respond: **Using "Respond to Webhook" node** (not immediately) — this lets
-  you wait for the AI Agent step to finish before answering the CRM.
-- Body the CRM sends:
-  ```json
-  {
-    "session_id": "wa_34600111222",
-    "history": [
-      { "role": "user",      "content": "Hola, necesito 500 cajas" },
-      { "role": "assistant", "content": "Con mucho gusto, ¿de qué medida?" },
-      { "role": "user",      "content": "[photo] Como esta" }
-    ],
-    "customer": {
-      "first_name": "Marta", "last_name": "Ruiz", "company": null,
-      "country": null, "city": null, "email": null,
-      "phone": "+34600111222", "wa_id": "34600111222", "notes": null
-    }
-  }
-  ```
-  `history` is up to 40 turns, oldest first. Media turns arrive as short
-  labels — `[photo]`, `[voice message]`, `[document: pedido.pdf]` — so the
-  model knows something was sent even though it cannot see it.
+| Setting | Where | Why there |
+|---|---|---|
+| `OPENAI_API_KEY` | `config/config.php` | It is a secret. The app never writes to that file. |
+| Model | **Settings page** | Changes often; no reason to need a file edit and a re-upload. |
+| System prompt | **Settings page** | Same — and the person tuning it is rarely the person with SSH. |
 
-### Step 2 — Build the prompt
-- Node: **Code** (or **Set**) named "Build Prompt"
-- Turn `{{$json.body.history}}` into whatever your model node wants. For a
-  Basic LLM Chain, joining the turns is enough:
-  ```js
-  const body = $input.first().json.body;
-  const who = c => [c.first_name, c.last_name].filter(Boolean).join(' ') || c.wa_id;
-  return [{ json: {
-    session_id: body.session_id,
-    customer: who(body.customer),
-    transcript: body.history
-      .map(t => `${t.role === 'user' ? 'Customer' : 'LiVAR'}: ${t.content}`)
-      .join('\n'),
-  }}];
-  ```
-- Add an **IF** node after it: if `session_id` or `history` is empty,
-  branch to "Respond to Webhook" with a 400 and
-  `{ "success": false, "error": "session_id and history are required" }`,
-  so a bad request never reaches the model.
+The model and prompt live in the `livar_settings` table. A fresh install
+runs on the built-in defaults in `SETTING_DEFAULTS`
+(`config/db_functions.php`), so drafting works before anyone opens the
+settings page. Saving an empty prompt restores the default.
 
-### Step 3 — AI Agent
-- Node: **AI Agent** (LangChain), or **Basic LLM Chain** if you don't need
-  tool use.
-- Chat Model: your model of choice.
-- **Memory: none.** The CRM sends the whole conversation on every call.
-  A Postgres Chat Memory node here would both duplicate that context and
-  write rows into `n8n_chat_history` behind the CRM's back.
-- System Prompt: LiVAR Packaging Solutions' support/sales persona — tone,
-  product knowledge, escalation rules. Add a line telling it to write the
-  reply only, with no preamble, since the text goes straight into an
-  agent's composer.
-- User Message: `{{$json.transcript}}` (plus `{{$json.customer}}` for
-  context if your prompt uses it).
+The model picker autocompletes from the models your key can actually
+use, fetched live from OpenAI — a hardcoded list would offer models that
+only fail at draft time. Free text is still accepted.
 
-### Step 4 — Respond to Webhook
-- Node: **Respond to Webhook**
-- Response Code: `200`
-- Response Body (JSON):
-  ```json
-  { "draft": "{{ $json.output }}" }
-  ```
-  Use whichever field your model node produces — commonly `output` or
-  `text`; check the node's output panel. The CRM also accepts `output`,
-  `text`, `reply`, `message` or `content` at the top level, and a bare
-  JSON string, so a small mismatch here won't break it.
+### Pressing Draft
 
-### Step 5 — Error handling
-- Set **On Error** = "Continue Using Error Output" on the AI Agent, and
-  route the error output to a small "Respond with error" branch:
-  - Node: **Respond to Webhook**
-  - Response Code: `500`
-  - Body: `{ "success": false, "error": "AI generation failed. Please try again." }`
-- Add a **Workflow Timeout** (Settings → Timeout Workflow) of ~40s so a
-  hung model call can't leave the CRM's request waiting past its own 45s
-  timeout without an answer.
-- Optional but recommended: an **Error Trigger** workflow that posts
-  failures to a Slack/email channel.
+`api/draft.php` builds the request:
 
-### Resulting flow
+1. Your system prompt.
+2. A second system message with what the CRM knows about the customer —
+   name, company, city, notes. Separate on purpose, so editing the prompt
+   cannot accidentally delete the customer context.
+3. Up to 40 turns of conversation, oldest first.
 
-```
-Webhook (POST { session_id, history, customer })
-   -> Build Prompt (Code/Set)
-   -> IF valid? --no--> Respond to Webhook (400)
-        |yes
-   -> AI Agent (no memory node — history comes in the request)
-   -> Respond to Webhook (200, { draft })
+The reply goes into the composer. **Nothing is written to the database
+until the agent presses Send** — a draft they discard leaves no trace.
 
-Any node error -> Respond to Webhook (500, { success: false, error })
-```
+### Photos
 
-Nothing in this workflow touches the database. The draft is returned to
-the CRM, dropped into the composer, and only becomes a message in
-`n8n_chat_history` if the agent presses **Send** — at which point
-`api/send.php` writes it, right after WhatsApp confirms delivery.
+WhatsApp is a visual channel; a customer will send a picture of the can
+they want rather than describe it. Photos are handled two ways at once:
+
+- **The most recent three photos travel as real images.** The model sees
+  the actual picture, so it can answer questions a canned description
+  would have thrown away — a lid diameter, a print defect, the wording on
+  a label.
+- **Every photo also gets a one-line caption** when it arrives, written
+  by the same model. That caption is what the sidebar shows instead of
+  "📷 Photo", and it stands in for older photos that fall outside the
+  three-image window.
+
+Attaching every photo in a long thread would cost a fortune in image
+tokens for pictures nobody is asking about; captioning alone would be
+lossy the moment someone asks a specific question. Doing both is why
+`DRAFT_IMAGE_LIMIT` exists in `api/draft.php` — raise it if your
+conversations are more visual than most.
+
+Captioning is never fatal. If OpenAI is unconfigured or failing, the
+photo still arrives, still renders, and still attaches to a draft; only
+the caption is missing.
+
+Other media does not travel as a file — the model cannot watch a video —
+so videos, documents and locations appear as short labels like
+`[sent a document: pedido.pdf]`.
+
+### Costs worth knowing
+
+- The system prompt is billed on **every** draft. The settings page warns
+  if it grows past ~6,000 characters.
+- Each inbound photo costs one small vision call, once.
+- **Run a live draft test** on the settings page is the only thing that
+  spends money without an agent asking for a draft, and it never runs on
+  its own.
+
+### Migrating from the old n8n workflow
+
+Earlier versions posted the conversation to an n8n webhook. If you are
+upgrading:
+
+1. Copy the system prompt out of your AI Agent node and paste it into the
+   settings page.
+2. Remove `N8N_WEBHOOK_URL` and `N8N_TIMEOUT_SECONDS` from
+   `config/config.php`, and add `OPENAI_API_KEY`.
+3. Deactivate the workflow in n8n. Nothing calls it any more.
+
+If that workflow also had Supabase insert nodes or a Postgres Chat Memory
+node, they were already writing history the CRM owns — deactivating it
+fixes that too.

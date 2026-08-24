@@ -42,24 +42,24 @@ const SUPABASE_URL = 'https://your-project-ref.supabase.co';
 const SUPABASE_SERVICE_KEY = 'REPLACE_WITH_YOUR_SERVICE_ROLE_KEY';
 
 // ------------------------------------------------------------------
-// 2. n8n
+// 2. OpenAI  --  platform.openai.com -> API keys
 // ------------------------------------------------------------------
 
 /**
- * The webhook that runs the AI agent.
+ * The key the CRM drafts replies with, and describes inbound photos
+ * with. Drafting runs inside this app -- there is no n8n in the path.
  *
- * n8n is a STATELESS DRAFT GENERATOR: the CRM posts the conversation
- * history to it, n8n runs the agent and returns { "draft": "..." }.
- * It must not write to n8n_chat_history -- the CRM owns that table.
- * See README section 5 for the workflow.
+ * The MODEL and the SYSTEM PROMPT are NOT set here. They live in the
+ * database so they can be changed from the settings page without
+ * touching a file; see settings.php.
  */
-const N8N_WEBHOOK_URL = 'https://your-n8n-host.example.com/webhook/your-webhook-uuid';
+const OPENAI_API_KEY = 'REPLACE_WITH_YOUR_OPENAI_API_KEY';
 
 /**
- * How long to wait for n8n to generate an answer, in seconds.
- * Raise this if your AI agent is slow and requests time out.
+ * Only change this to point at a compatible proxy or gateway. It must
+ * speak the OpenAI REST API and include the /v1 path.
  */
-const N8N_TIMEOUT_SECONDS = 45;
+const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
 // ------------------------------------------------------------------
 // 3. Sign-in

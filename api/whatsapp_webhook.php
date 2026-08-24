@@ -29,6 +29,7 @@ require_once __DIR__ . '/../config/db_functions.php';
 require_once __DIR__ . '/../config/app.php';
 require_once __DIR__ . '/../config/whatsapp.php';
 require_once __DIR__ . '/../config/media.php';
+require_once __DIR__ . '/../config/ai.php';
 
 // ---------------------------------------------------------------------
 // 1. Authenticate by URL token
@@ -319,6 +320,10 @@ function download_pending_media(array $pending): void
             $file = WhatsApp::client()->fetchMedia($item['media_id']);
             $saved = media_store($file['bytes'], $file['mime']);
             setMessageMedia($item['id'], $saved['path'], $saved['mime'], $saved['size']);
+
+            if (str_starts_with($saved['mime'], 'image/')) {
+                caption_photo($item['id'], $saved['abs'], $saved['mime']);
+            }
         } catch (Throwable $e) {
             // The row is already in the thread; api/media.php will try
             // again the first time somebody opens it.
@@ -327,6 +332,33 @@ function download_pending_media(array $pending): void
     }
 
     log_media_usage();
+}
+
+/**
+ * Asks the vision model for a one-line description of a photo.
+ *
+ * Runs here, once, rather than at draft time, because the sidebar needs
+ * the label before anyone opens the conversation -- "📷 Photo" tells an
+ * agent nothing about which of forty threads to answer first.
+ *
+ * Never fatal: a photo with no caption still renders, still attaches to
+ * a draft as a real image, and can still be replied to. An unconfigured
+ * or failing AI must not cost us the message.
+ */
+function caption_photo(int $rowId, string $absPath, string $mime): void
+{
+    if (!AI::isConfigured()) {
+        return;
+    }
+
+    try {
+        $caption = AI::client()->describeImage($absPath, $mime, getSetting('ai_model'));
+        if ($caption !== '') {
+            setMessageCaption($rowId, mb_substr($caption, 0, 300));
+        }
+    } catch (Throwable $e) {
+        error_log("[AI] could not caption photo for row {$rowId}: " . $e->getMessage());
+    }
 }
 
 /**
