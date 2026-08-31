@@ -157,6 +157,10 @@ returns table (
     tax_id             text,
     details            text,
     wa_id              text,
+    -- The name the customer uses on WhatsApp. Without this the sidebar
+    -- falls back to the bare phone number for anyone an agent has not
+    -- typed a name for, which is most of a real inbox.
+    wa_profile_name    text,
     last_inbound_at    timestamptz,
     last_message       text,
     last_message_type  text,
@@ -185,7 +189,7 @@ as $$
     select
         f.id, f.created_at, f.session_id, f.first_name, f.last_name, f.username,
         f.phone, f.country, f.email, f.city, f.address, f.tax_id, f.details,
-        f.wa_id, f.last_inbound_at,
+        f.wa_id, f.wa_profile_name, f.last_inbound_at,
         -- A photo must not read as "No messages yet" in the sidebar, so
         -- media rows get a short label instead of their (empty) content.
         case lm.msg_type
