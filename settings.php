@@ -18,6 +18,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/config/auth.php';
+require_once __DIR__ . '/config/version.php';
 
 require_auth(false);
 
@@ -122,6 +123,16 @@ function asset(string $relativePath): string
             Detailed errors are in the PHP error log on the
             <code>[Supabase]</code>, <code>[WhatsApp]</code> and <code>[AI]</code> lines.
             &nbsp;·&nbsp; <a href="login.php?logout=1">Sign out</a>
+        </p>
+
+        <!--
+            The build actually running. The commit is read from .git at
+            request time, so this is the one place that can confirm a
+            deploy landed without opening a shell on the server.
+        -->
+        <p class="settings__version" title="Version, deployed commit and branch">
+            LiVAR Packaging CRM
+            <span class="settings__version-value"><?= htmlspecialchars(app_version_label(), ENT_QUOTES, 'UTF-8') ?></span>
         </p>
     </main>
 </div>

@@ -75,6 +75,12 @@ README** — the template stays placeholders-only.
   `api/draft.php`, which pass the provider's own wording through: neither
   "message failed" nor "the AI failed" can tell an agent whether to
   retry, fix a number, top up a balance, or phone the customer.
+- **Bump `APP_VERSION` in `config/version.php` on every change** — patch
+  for a fix, minor for a feature. It is shown in the settings footer
+  beside the deployed commit, which is how anyone tells whether a `git
+  pull` on the server actually landed. A version that silently stops
+  moving makes that footer worse than useless, because it still looks
+  authoritative.
 - **Schema changes** go in `sql/schema.sql`, which must stay safe to
   re-run (`create ... if not exists`, `create or replace function`). A
   function whose `returns table` changes needs an explicit
