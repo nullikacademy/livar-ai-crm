@@ -72,16 +72,38 @@ try {
         json_error('Unknown check', 404);
     }
 
-    $result = match ($check) {
-        'config'   => checkConfig(),
-        'supabase' => checkSupabase(),
-        'schema'   => checkSchema(),
-        'whatsapp' => checkWhatsApp(),
-        'webhook'  => checkWebhook(),
-        'openai'   => checkOpenAi(),
-        'storage'  => checkStorage(),
-        'php'      => checkPhp(),
-    };
+    // A crashing check reports what crashed, in the row it belongs to,
+    // rather than taking down the whole page with a generic error. The
+    // exception text is a PHP message about this app's own code -- a
+    // missing function, a bad path -- and naming it is the difference
+    // between a fixable problem and a dead end. It carries no secret:
+    // the layers that could (Supabase, WhatsApp, OpenAI) all throw
+    // their own typed exceptions with messages built for display.
+    try {
+        $result = match ($check) {
+            'config'   => checkConfig(),
+            'supabase' => checkSupabase(),
+            'schema'   => checkSchema(),
+            'whatsapp' => checkWhatsApp(),
+            'webhook'  => checkWebhook(),
+            'openai'   => checkOpenAi(),
+            'storage'  => checkStorage(),
+            'php'      => checkPhp(),
+        };
+    } catch (Throwable $e) {
+        error_log('[api/health] ' . $check . ' check crashed: ' . $e->getMessage());
+        $result = [
+            'status'  => 'fail',
+            'summary' => 'This check crashed',
+            'detail'  => [
+                $e->getMessage(),
+                'in ' . basename($e->getFile()) . ' line ' . $e->getLine(),
+            ],
+            'hint'    => 'This is a fault in the CRM itself, not in the service it was checking. '
+                       . 'A "Call to undefined function" usually means your host disables that '
+                       . 'function in php.ini.',
+        ];
+    }
 
     json_response(['success' => true, 'result' => ['key' => $check, 'label' => HEALTH_CHECKS[$check]] + $result]);
 } catch (Throwable $e) {
@@ -304,6 +326,23 @@ function checkWhatsApp(): array
             'summary' => "API key rejected (HTTP {$status})",
             'detail'  => ['360dialog answered, but refused the key.'],
             'hint'    => 'Recopy D360_API_KEY from the 360dialog Hub for this WhatsApp number.',
+        ];
+    }
+
+    // Rate limiting is not a configuration problem, and saying
+    // "unconfirmed" about it sends people to check a key that is fine.
+    // Note that this page is itself a source of these requests.
+    if ($status === 429) {
+        return [
+            'status'  => 'warn',
+            'summary' => 'Rate limited by 360dialog (HTTP 429)',
+            'detail'  => [
+                "{$base} is throttling requests, so the key could not be confirmed right now.",
+                'Each re-check of this page costs two requests to 360dialog, so re-checking '
+                . 'repeatedly is itself a way to hit this.',
+            ],
+            'hint'    => 'Wait a minute and re-check. Sending and receiving messages is unaffected '
+                       . 'unless your account is over its message limits.',
         ];
     }
 
@@ -643,9 +682,15 @@ function storageContext(string $path): array
         $lines[] = 'open_basedir is set: ' . $baseDir;
     }
 
-    $free = @disk_free_space($path);
-    if (is_float($free) && $free < 52428800) {
-        $lines[] = 'Only ' . humanSize((int) $free) . ' free on this filesystem.';
+    // Managed hosts routinely put disk_free_space() in disable_functions,
+    // and in PHP 8 a disabled function is an undefined one -- it throws an
+    // Error that @ does not suppress. Every optional call in a health
+    // check needs this guard, or the diagnostic becomes the outage.
+    if (function_exists('disk_free_space')) {
+        $free = @disk_free_space($path);
+        if (is_float($free) && $free < 52428800) {
+            $lines[] = 'Only ' . humanSize((int) $free) . ' free on this filesystem.';
+        }
     }
 
     return $lines;
