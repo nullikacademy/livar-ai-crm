@@ -531,6 +531,13 @@ function checkStorage(): array
 {
     $root = media_root();
 
+    // PHP caches the result of is_writable() and friends, and under
+    // php-fpm that cache outlives the request (realpath_cache_ttl, 120s
+    // by default). Without this, fixing the permissions and pressing
+    // Re-check keeps reporting the old failure for two minutes, which
+    // makes it look like the fix did not work.
+    clearstatcache(true, $root);
+
     if (!is_dir($root)) {
         return [
             'status'  => 'fail',
