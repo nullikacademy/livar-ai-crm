@@ -623,6 +623,7 @@
         }
 
         if (isOurs) {
+            appendSourceTag(bubble, msg);
             appendStatus(bubble, msg);
             // Copy only makes sense for something with words in it.
             if (msg.content) appendCopyAction(bubble, msg.content);
@@ -710,6 +711,10 @@
         img.alt = msg.content || 'Photo';
         img.src = msg.media_url;
         img.addEventListener('click', () => openLightbox(msg.media_url, img.alt));
+        // Meta expires media after about 30 days and a download can fail
+        // outright, so the file behind a row is not guaranteed to be
+        // there. Say so, rather than leaving a broken-image icon.
+        img.addEventListener('error', () => replaceWithMissingMedia(bubble, img, 'Photo'));
         bubble.appendChild(img);
         appendCaption(bubble, msg.content);
     }
@@ -724,6 +729,7 @@
         video.controls = true;
         video.preload = 'metadata';
         video.src = msg.media_url;
+        video.addEventListener('error', () => replaceWithMissingMedia(bubble, video, 'Video'));
         bubble.appendChild(video);
         appendCaption(bubble, msg.content);
     }
@@ -820,6 +826,39 @@
         bubble.appendChild(note);
     }
 
+    /**
+     * Swaps a media element that failed to load for the same note.
+     *
+     * The row can carry a media_url whose bytes are gone — Meta expires
+     * media after about 30 days, and a download can simply have failed —
+     * and a broken-image icon tells an agent nothing about which of
+     * those happened or whether it is worth asking the customer again.
+     */
+    function replaceWithMissingMedia(bubble, node, label) {
+        node.remove();
+
+        // The caption, if there is one, stays: it is our own text and
+        // still describes what was sent. This fires from a load error,
+        // so it lands after the source tag was already prepended --
+        // hence going in after that tag rather than at the very top.
+        const note = missingMediaNote(label);
+        const tag = bubble.querySelector('.bubble__tag');
+        if (tag) {
+            tag.after(note);
+        } else {
+            bubble.prepend(note);
+        }
+
+        bubble.classList.remove('bubble--media');
+    }
+
+    function missingMediaNote(label) {
+        const note = document.createElement('div');
+        note.className = 'bubble__unsupported';
+        note.textContent = `${label} — no longer available.`;
+        return note;
+    }
+
     function appendCaption(bubble, caption) {
         if (!caption) return;
         const node = document.createElement('div');
@@ -828,12 +867,38 @@
         bubble.appendChild(node);
     }
 
+    /**
+     * Marks a reply that was typed on a phone rather than sent here.
+     *
+     * Only 'app' is labelled. A bubble with no tag is one this CRM sent,
+     * which is the common case and does not need saying — tagging both
+     * would be noise on every outbound message in every thread.
+     */
+    function appendSourceTag(bubble, msg) {
+        if (msg.wa_source !== 'app') return;
+
+        const tag = document.createElement('div');
+        tag.className = 'bubble__tag';
+        tag.textContent = 'Sent from the WhatsApp app';
+        // Above the text, like the template tag, so it reads as a label
+        // on the message rather than a footnote after it.
+        bubble.prepend(tag);
+    }
+
     function appendStatus(bubble, msg) {
         if (!msg.wa_status) return;
         const node = document.createElement('div');
         node.className = 'bubble__status';
 
-        if (msg.wa_status === 'failed') {
+        if (msg.wa_status === 'deleted') {
+            // Deleted for everyone from the phone. The row stays: a
+            // message that was in the thread and then withdrawn is a
+            // fact about the conversation, and hiding it makes whatever
+            // the customer said next unreadable.
+            bubble.classList.add('is-deleted');
+            node.classList.add('is-failed');
+            node.textContent = 'Deleted';
+        } else if (msg.wa_status === 'failed') {
             node.classList.add('is-failed');
             node.textContent = 'Not delivered';
         } else if (msg.wa_status === 'read') {

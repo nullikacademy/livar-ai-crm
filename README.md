@@ -156,6 +156,36 @@ To check it works, send a WhatsApp message to your business number. A
 customer should appear in the sidebar within a few seconds. If not, check
 your PHP error log for lines starting with `[WhatsApp]`.
 
+## 2b. Updating an existing install
+
+Two steps, in this order. Your `config/config.php` is gitignored, so a
+pull never touches it.
+
+```bash
+cd /path/to/your/crm          # on cPanel: public_html, or the subdomain folder
+git pull origin main
+```
+
+Then **re-run `sql/schema.sql` in the Supabase SQL editor**. It is
+written to be safe to re-run — every table, column, index and function in
+it is guarded — and re-running is exactly how an existing database picks
+up the columns a new version added. Skipping it is the usual cause of a
+`column ... does not exist` error right after an update.
+
+If you deploy by uploading a zip rather than with git, keep a copy of
+`config/config.php` first and put it back afterwards, then re-run the
+schema the same way.
+
+**Check it landed:** open the settings page (gear icon) and look at the
+footer. It shows the version and the commit git actually has checked out,
+which is the one thing that can tell you whether the pull worked without
+opening a shell. If the version there hasn't moved, the new code is not
+running.
+
+Nothing else is needed — there is no build step, no dependency install
+and no service to restart. `asset()` cache-busts the CSS and JS on
+`filemtime`, so browsers pick up the new frontend on the next load.
+
 ### If something doesn't work
 
 **Open the gear icon in the sidebar first** — `settings.php` checks every
@@ -286,6 +316,56 @@ confirming to a prober that the endpoint exists.
 
 The open conversation polls every 8s and the sidebar every 25s, so the new
 message appears without a reload. Both pause while the tab is hidden.
+
+### Replies you send from your phone
+
+If your number runs **WhatsApp Coexistence** — the WhatsApp Business app
+and the Cloud API on the same line — then a reply someone taps out on
+their phone is mirrored into the CRM. Meta sends it back on the same
+webhook as an `smb_message_echoes` event, and it lands in the thread as
+an outbound message tagged **Sent from the WhatsApp app**, so you can
+tell at a glance which replies came from here and which did not.
+
+Without it, the CRM shows a customer's question with no answer under it
+while the customer has in fact already been answered — which reads as a
+dropped conversation, and gets it answered twice.
+
+Editing or deleting one of those messages from the phone is mirrored
+too: an edit rewrites the text in place, and a delete strikes the message
+through and marks it **Deleted** rather than removing the row, because
+what was said and then withdrawn is part of the conversation and dropping
+it leaves the customer's next message answering nothing.
+
+Two things to know:
+
+- **This only works on a coexistence number.** A number migrated to the
+  Cloud API the ordinary way is disconnected from the WhatsApp Business
+  app, so there is nothing to mirror. See "Turning on coexistence" below.
+- **`smb_message_echoes` must be subscribed** on the number's webhook.
+  If it isn't, nothing arrives and there is no error to see — the CRM
+  simply never hears about those messages.
+
+An echoed message does **not** reopen the 24-hour window. That window is
+opened by the customer speaking, and us replying is not that.
+
+#### Turning on coexistence
+
+This is done in 360dialog, not in the CRM — there is nothing to configure
+here beyond having run the current `sql/schema.sql`.
+
+1. Onboard the number with **coexistence** in the 360dialog Hub (an
+   existing WhatsApp Business app number, connected via the QR-code flow
+   rather than a full migration).
+2. Make sure the number's webhook subscribes to the
+   **`smb_message_echoes`** field, alongside `messages`.
+3. Send a message to a customer from the phone. It should appear in the
+   CRM within a few seconds, tagged **Sent from the WhatsApp app**. If it
+   doesn't, check the PHP error log for `[WhatsApp]` lines.
+
+Note that the *existing* history on the phone is not imported — only
+messages sent from the moment coexistence is on. Meta does offer a
+one-time history sync on a separate `history` webhook; this CRM does not
+read it yet.
 
 ### A reply goes out
 

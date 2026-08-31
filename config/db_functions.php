@@ -255,7 +255,7 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
         'session_id' => 'eq.' . $sessionId,
         'select'     => 'id,session_id,message,created_at,direction,wa_status,msg_type,'
                       . 'media_path,media_mime,media_size,media_name,ai_caption,'
-                      . 'wa_buttons,wa_template,'
+                      . 'wa_buttons,wa_template,wa_source,'
                       . 'latitude,longitude,place_name,place_address',
         'limit'      => (string) $limit,
     ];
@@ -311,6 +311,10 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
             // just the question text.
             'buttons'       => decodeButtonLabels($row['wa_buttons'] ?? null),
             'wa_template'   => $row['wa_template'] ?? null,
+
+            // 'app' for a reply typed on the phone and mirrored back by
+            // the coexistence echo webhook; null for one this CRM sent.
+            'wa_source'     => $row['wa_source'] ?? null,
 
             // Server-side only: the draft builder needs the file on disk
             // to attach a real image. api/messages.php strips this before
@@ -527,7 +531,7 @@ function insertWhatsAppMessage(string $sessionId, array $fields): ?array
 
     foreach ([
         'wa_message_id', 'wa_status', 'wa_error', 'wa_media_id',
-        'wa_buttons', 'wa_template',
+        'wa_buttons', 'wa_template', 'wa_source',
         'media_path', 'media_mime', 'media_size', 'media_name',
         'latitude', 'longitude', 'place_name', 'place_address',
     ] as $optional) {
@@ -594,6 +598,47 @@ function updateMessageStatus(string $waMessageId, string $status, string $error 
 
     $sb = Supabase::client();
     $sb->patch('n8n_chat_history', $query, $payload);
+}
+
+/**
+ * Rewrites the text of a message that was edited after it was sent.
+ *
+ * Reached only from the coexistence echo webhook: WhatsApp lets a
+ * business edit a message from the app for a few minutes after sending
+ * it, and a thread showing the version the customer no longer sees is
+ * worse than one showing nothing.
+ *
+ * Read-then-write rather than a single patch, because `message` is a
+ * jsonb object and PostgREST would replace the whole thing -- losing the
+ * LangChain `type` beside the content that everything reading this table
+ * still depends on.
+ */
+function setMessageContent(string $waMessageId, string $content): void
+{
+    if ($waMessageId === '' || $content === '') {
+        return;
+    }
+
+    $sb     = Supabase::client();
+    $result = $sb->get('n8n_chat_history', [
+        'wa_message_id' => 'eq.' . $waMessageId,
+        'select'        => 'id,message',
+        'limit'         => '1',
+    ]);
+
+    $row = $result['rows'][0] ?? null;
+    if ($row === null) {
+        error_log('[WhatsApp] an edit arrived for a message that is not in the thread: ' . $waMessageId);
+        return;
+    }
+
+    $message = is_string($row['message']) ? json_decode($row['message'], true) : $row['message'];
+    if (!is_array($message)) {
+        return;
+    }
+
+    $message['content'] = $content;
+    $sb->patch('n8n_chat_history', ['id' => 'eq.' . (int) $row['id']], ['message' => $message]);
 }
 
 /**

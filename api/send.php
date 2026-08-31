@@ -425,6 +425,11 @@ function storeOutbound(string $sessionId, array $fields): array
 {
     $fields['direction'] = 'out';
     $fields['wa_status'] = 'sent';
+    // Where this was written. The counterpart is 'app', set by the
+    // coexistence echo webhook for a reply somebody typed on their
+    // phone -- so an agent opening a thread can tell which replies came
+    // from here and which did not.
+    $fields['wa_source'] = 'crm';
 
     $row = insertWhatsAppMessage($sessionId, $fields);
     if ($row === null) {
@@ -451,6 +456,7 @@ function storeOutbound(string $sessionId, array $fields): array
         'media_name'    => $fields['media_name'] ?? null,
         'buttons'       => decodeButtonLabels($fields['wa_buttons'] ?? null),
         'wa_template'   => $fields['wa_template'] ?? null,
+        'wa_source'     => 'crm',
         'latitude'      => $fields['latitude'] ?? null,
         'longitude'     => $fields['longitude'] ?? null,
         'place_name'    => $fields['place_name'] ?? null,

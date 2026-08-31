@@ -38,8 +38,18 @@ README** — the template stays placeholders-only.
   `config/whatsapp.php`, OpenAI through `config/ai.php`, media-on-disk
   rules through `config/media.php`.
 - **The CRM is the only writer to `n8n_chat_history`.** Inbound rows come
-  from `api/whatsapp_webhook.php`, outbound ones from `api/send.php`. The
-  table keeps its legacy name; nothing outside this app writes to it.
+  from `api/whatsapp_webhook.php`, outbound ones from `api/send.php` —
+  and, on a coexistence number, from the same webhook's
+  `smb_message_echoes` branch, which mirrors messages sent from the
+  WhatsApp app. The table keeps its legacy name; nothing outside this app
+  writes to it.
+- **An echo is outbound, and reads `to`, not `from`.** In
+  `smb_message_echoes` the business is the sender, so `from` is our own
+  number; filing on it would put every mirrored message against a
+  customer record for ourselves. Echoes never call `touchLastInbound()`
+  either: the 24-hour window is opened by the customer speaking, and us
+  replying from a phone is not that. `wa_source` records which side wrote
+  a message — `'crm'` from here, `'app'` from a phone.
 - **Drafting runs in-app, not in n8n.** `api/draft.php` calls OpenAI
   directly. A draft is never persisted — it goes into the composer, and
   only becomes a row if the agent presses Send.

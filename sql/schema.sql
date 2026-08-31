@@ -98,6 +98,11 @@ alter table public.n8n_chat_history
     -- content is the template already filled in, which is what the
     -- customer saw; this records what it was built from.
     add column if not exists wa_template   text,
+    -- Where an outbound message was written: 'crm' from this app, 'app'
+    -- from the WhatsApp Business app on somebody's phone, mirrored back
+    -- by the smb_message_echoes coexistence webhook. Null on inbound
+    -- rows and on anything written before this column existed.
+    add column if not exists wa_source     text,
     -- The provider's media id, kept so api/media.php can re-download a
     -- file the webhook never managed to fetch. Meta expires media after
     -- roughly 30 days, after which this is only a record of what was.

@@ -1613,6 +1613,15 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 .bubble--customer .bubble__tag { color: var(--ink-3); opacity: 1; }
 
+/* Deleted for everyone from the phone. Struck through rather than
+   removed: what was said and then withdrawn is part of the thread, and
+   dropping it leaves the customer's next message answering nothing. */
+.bubble.is-deleted .bubble__text,
+.bubble.is-deleted .bubble__caption {
+    text-decoration: line-through;
+    opacity: 0.6;
+}
+
 .window-notice__action { margin-top: 8px; display: block; }
 
 .dialog__note { margin: -4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-3); }
