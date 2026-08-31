@@ -542,17 +542,37 @@ function checkStorage(): array
         return [
             'status'  => 'fail',
             'summary' => 'Media directory is missing',
-            'detail'  => ['Expected storage/media/ to exist and could not create it.'],
+            'detail'  => array_merge(
+                ['Expected ' . $root . ' to exist, and could not create it.'],
+                storageContext($root)
+            ),
             'hint'    => 'Create storage/media/ and make it writable by the web server.',
         ];
     }
 
-    if (!is_writable($root)) {
+    // is_writable() only consults the permission bits. A real write is
+    // the only thing that also catches open_basedir, a read-only mount
+    // and a full disk -- and those look identical from the outside while
+    // needing completely different fixes.
+    $probe   = $root . '/.probe-' . bin2hex(random_bytes(4));
+    $written = @file_put_contents($probe, 'x') !== false;
+    if ($written) {
+        @unlink($probe);
+    }
+
+    if (!$written) {
         return [
             'status'  => 'fail',
             'summary' => 'Media directory is not writable',
-            'detail'  => ['Inbound photos and documents cannot be saved.'],
-            'hint'    => 'chmod 755 storage/media (and make sure the web server user owns it).',
+            'detail'  => array_merge(
+                ['Inbound photos and documents cannot be saved.'],
+                storageContext($root)
+            ),
+            // No single hint can be right here, so point at the facts
+            // above rather than asserting a cause this cannot know.
+            'hint'    => 'Compare "PHP runs as" with the directory owner above. '
+                       . 'If open_basedir is set and does not cover this path, that is the cause, '
+                       . 'and it is fixed in the Apache/PHP config rather than with chmod.',
         ];
     }
 
@@ -589,6 +609,46 @@ function checkStorage(): array
     }
 
     return ['status' => 'ok', 'summary' => "Writable, {$size} stored", 'detail' => $detail, 'hint' => ''];
+}
+
+/**
+ * The facts needed to work out WHY a directory is not writable.
+ *
+ * A permissions failure has several possible causes that all present
+ * identically -- wrong owner, open_basedir, a read-only mount, a full
+ * disk -- and each needs a different fix. Testing this from a shell is
+ * misleading too: the CLI has its own php.ini and usually runs as a
+ * different user, so it can report "writable" while the web server
+ * cannot write at all. These are the values as the web server sees them.
+ *
+ * @return array<int, string>
+ */
+function storageContext(string $path): array
+{
+    $user = function_exists('posix_geteuid')
+        ? (posix_getpwuid(posix_geteuid())['name'] ?? (string) posix_geteuid())
+        : (get_current_user() ?: 'unknown');
+
+    $lines = ['Path: ' . $path, 'PHP runs as: ' . $user];
+
+    if (is_dir($path)) {
+        $owner = function_exists('posix_getpwuid')
+            ? (posix_getpwuid(fileowner($path))['name'] ?? (string) fileowner($path))
+            : (string) fileowner($path);
+        $lines[] = 'Directory owner: ' . $owner . ' · mode ' . substr(sprintf('%o', fileperms($path)), -4);
+    }
+
+    $baseDir = ini_get('open_basedir');
+    if (is_string($baseDir) && $baseDir !== '') {
+        $lines[] = 'open_basedir is set: ' . $baseDir;
+    }
+
+    $free = @disk_free_space($path);
+    if (is_float($free) && $free < 52428800) {
+        $lines[] = 'Only ' . humanSize((int) $free) . ' free on this filesystem.';
+    }
+
+    return $lines;
 }
 
 /**
