@@ -1539,15 +1539,31 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 .btn-link--danger { color: #B42318; }
 .btn-link--danger:hover { color: #912018; }
 
-/* Flag emoji sit beside a name, so they get the spacing of a word and
-   never the line-height of one -- a taller glyph must not push a list
-   row out of alignment with its neighbours. */
+/* Flags sit beside a name, so they get the spacing of a word and never
+   the line-height of one -- a taller glyph must not push a list row out
+   of alignment with its neighbours.
+
+   Real artwork rather than the emoji: Windows ships no country-flag
+   glyphs, so 🇦🇪 renders there as the letters "AE". The files are
+   vendored under assets/flags/. */
 .flag {
     margin-right: 5px;
-    font-size: 1.05em;
     line-height: 1;
     vertical-align: -0.05em;
 }
+img.flag {
+    display: inline-block;
+    width: 1.25em;
+    height: 0.94em;         /* the 4x3 aspect the artwork is drawn at */
+    object-fit: cover;
+    border-radius: 2px;
+    vertical-align: -0.12em;
+    /* A hairline, so a mostly-white flag (Japan) still reads as a flag
+       against the white sidebar rather than as a floating red dot. */
+    box-shadow: 0 0 0 1px rgba(16, 16, 20, 0.12);
+}
+/* The fallback when a file is missing: the emoji, or the bare code. */
+.flag--text { font-size: 1.05em; }
 
 .field__help--inline {
     display: flex;

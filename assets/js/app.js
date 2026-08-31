@@ -203,13 +203,37 @@
     }
 
     /**
-     * The flag emoji for a customer, or ''.
+     * A flag for a customer, as an image, or null.
      *
-     * Worked out server-side from the dialling prefix (see
-     * config/countries.php), so the browser only has to render it.
+     * Not the emoji. Windows ships no country-flag glyphs at all — by
+     * design, not by omission — so 🇦🇪 renders there as the bare letters
+     * "AE", which is what everyone on Windows was seeing. The artwork is
+     * vendored under assets/flags/ (see the LICENSE there), so this
+     * costs no third-party request and only the flags actually on screen
+     * are fetched.
+     *
+     * The emoji stays in the payload as the fallback: if a file is ever
+     * missing, the letters are still better than a broken image icon.
      */
-    function countryFlag(customer) {
-        return customer?.country_flag || '';
+    function buildFlag(customer) {
+        const code = customer?.country_code;
+        // Built into a URL, so it is checked rather than trusted, even
+        // though it comes from our own table in config/countries.php.
+        if (!code || !/^[A-Za-z]{2}$/.test(code)) return null;
+
+        const img = document.createElement('img');
+        img.className = 'flag';
+        img.alt = '';
+        img.title = customer.country_name || code;
+        img.addEventListener('error', () => {
+            const fallback = document.createElement('span');
+            fallback.className = 'flag flag--text';
+            fallback.title = img.title;
+            fallback.textContent = customer.country_flag || code.toUpperCase();
+            img.replaceWith(fallback);
+        });
+        img.src = `assets/flags/${code.toLowerCase()}.svg`;
+        return img;
     }
 
     /** Writes "🇪🇸 Marta Roig" into a node, flag first. */
@@ -217,16 +241,8 @@
         if (!node) return;
         node.textContent = '';
 
-        const flag = countryFlag(customer);
-        if (flag) {
-            const badge = document.createElement('span');
-            badge.className = 'flag';
-            badge.textContent = flag;
-            // Windows has no flag glyphs and renders the two letters, so
-            // the country name has to be reachable some other way.
-            badge.title = customer.country_name || '';
-            node.appendChild(badge);
-        }
+        const flag = buildFlag(customer);
+        if (flag) node.appendChild(flag);
 
         node.appendChild(document.createTextNode(fullName(customer)));
     }
@@ -2306,13 +2322,9 @@
         el.countryDetected.hidden = false;
         el.countryDetected.textContent = '';
 
-        const flag = countryFlag(customer);
-        if (flag) {
-            const node = document.createElement('span');
-            node.className = 'flag';
-            node.textContent = flag;
-            el.countryDetected.appendChild(node);
-        }
+        const flag = buildFlag(customer);
+        if (flag) el.countryDetected.appendChild(flag);
+
         el.countryDetected.appendChild(
             document.createTextNode(`From the number: ${name}`),
         );

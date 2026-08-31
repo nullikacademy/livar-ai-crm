@@ -676,6 +676,8 @@ them to edit and send.
 
 - Match the customer's language.
 - Be brief and concrete. WhatsApp is not email.
+- WhatsApp is not Markdown. Bold is *one* asterisk, italic is _one_
+  underscore. Never write **double** asterisks, headings or [links](url).
 - Give prices, sizes and lead times only when they appear in the conversation
   or the customer's notes. Never invent a figure.
 - If something needs a person — a custom quote, a complaint, a payment issue —

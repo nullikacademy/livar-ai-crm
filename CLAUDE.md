@@ -101,6 +101,20 @@ README** — the template stays placeholders-only.
   server-generated hex and extensions come from a mime allowlist — never
   from anything a sender supplied. A new endpoint that serves bytes uses
   `media_stream()` rather than writing the headers again.
+- **WhatsApp is not Markdown, and drafts are converted, not asked
+  nicely.** Bold is one asterisk; a model's `**bold**` reaches the
+  customer wearing a spare asterisk at each end.
+  `WhatsApp::fromMarkdown()` rewrites emphasis, headings, bullets and
+  links, and `api/draft.php` runs every draft through it. The system
+  prompt says the same thing, but a prompt is a request — the conversion
+  is the guarantee. Never apply it to text an agent typed: they meant it.
+- **Flags are images, never emoji.** Windows ships no country-flag
+  glyphs, so 🇦🇪 renders there as the letters "AE" — which is the bug
+  this replaced. The artwork is vendored under `assets/flags/<cc>.svg`
+  (MIT, see its LICENSE) rather than fetched from a CDN, so the CRM keeps
+  its no-third-party-runtime-dependency property. `buildFlag()` in
+  `app.js` validates the code before it goes into a URL and falls back to
+  the emoji if a file is ever missing.
 - **Sending outside the 24-hour window is templates only.**
   `api/send.php` enforces the window for every type except `template`,
   which is the one thing WhatsApp still delivers. A template row stores

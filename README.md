@@ -488,7 +488,11 @@ Three things about a customer are not typed in:
 
 - **The country.** It is in the dialling prefix, so `config/countries.php`
   works it out and the flag appears beside the name in the list, the
-  header and the details panel. The country *field* is filled in once on
+  header and the details panel. The flags are real artwork, vendored
+  under `assets/flags/` — **not** emoji, because Windows ships no
+  country-flag glyphs at all and renders 🇦🇪 there as the bare letters
+  "AE". Only the flags actually on screen are fetched, and there is no
+  third-party request: see `assets/flags/LICENSE`. The country *field* is filled in once on
   first contact and is editable after that — a number can be a roaming
   SIM or a virtual line, and a prefix table must never overwrite what an
   agent knows. The panel shows what the number suggests as a note beside
@@ -556,6 +560,25 @@ naming the budget rather than a bare "empty reply".
 
 The reply goes into the composer. **Nothing is written to the database
 until the agent presses Send** — a draft they discard leaves no trace.
+
+### WhatsApp is not Markdown
+
+Models write Markdown no matter what the prompt says, and WhatsApp's
+formatting predates it: bold is **one** asterisk, `*like this*`. A draft
+containing `**price**` reaches the customer as a bold word with a spare
+asterisk stuck to each end, because WhatsApp consumes the inner pair and
+prints the outer one.
+
+So every draft is converted on the way back — `**bold**` to `*bold*`,
+`~~strike~~` to `~strike~`, `### Heading` to `*Heading*`, `- item` to a
+real bullet, and `[text](url)` to the text followed by the URL. Italic
+is left alone, since `_italic_` means the same in both. It is done in
+code rather than left to the prompt because a prompt is a request and
+this needs to be a guarantee; the agent still sees the corrected text in
+the composer and can edit it.
+
+Only drafts are converted. Something an agent typed themselves is left
+exactly as they typed it.
 
 ### Photos
 

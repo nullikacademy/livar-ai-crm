@@ -643,6 +643,62 @@ final class WhatsApp
     }
 
     /**
+     * Rewrites Markdown emphasis as WhatsApp's own.
+     *
+     * WhatsApp is not Markdown and predates it in this space: bold is
+     * ONE asterisk, `*like this*`, and strikethrough is one tilde. A
+     * model writing `**bold**` is writing correct Markdown and wrong
+     * WhatsApp -- what the customer sees is a bold word with a stray
+     * asterisk stuck to each end, because WhatsApp consumes the inner
+     * pair and renders the outer one literally.
+     *
+     * Applied to drafts rather than to everything an agent types: a
+     * person writing `**` in the composer meant to, and rewriting it
+     * under them would be the CRM arguing with its own user. See
+     * api/draft.php.
+     *
+     * Italic is left alone -- `_italic_` means the same thing in both --
+     * and so are fenced code blocks, which WhatsApp also spells ```.
+     */
+    public static function fromMarkdown(string $text): string
+    {
+        $rules = [
+            // Bold. Both Markdown spellings collapse to WhatsApp's one
+            // asterisk. The lookarounds stop `** stray` or a lone `**`
+            // from matching, and require the run to start and end on a
+            // non-space, which is what Markdown itself demands.
+            '/(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)/su' => '*$1*',
+            '/(?<!_)__(?!\s)(.+?)(?<!\s)__(?!_)/su'       => '*$1*',
+
+            // Strikethrough: two tildes in Markdown, one in WhatsApp.
+            '/(?<!~)~~(?!\s)(.+?)(?<!\s)~~(?!~)/su'       => '~$1~',
+
+            // A heading has no equivalent at all, so it becomes the
+            // nearest thing WhatsApp has. Left as `### Prices` it would
+            // reach the customer with the hashes still on it.
+            '/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/mu'         => '*$1*',
+
+            // Markdown bullets render as literal `-` or `*` on WhatsApp.
+            // A real bullet is both shorter and what the model meant.
+            '/^[ \t]*[-*+][ \t]+/mu'                      => '• ',
+        ];
+
+        foreach ($rules as $pattern => $replacement) {
+            $text = preg_replace($pattern, $replacement, $text) ?? $text;
+        }
+
+        // `[our catalogue](https://…)` shows the customer neither a link
+        // nor the words, just the punctuation around both.
+        $text = preg_replace_callback(
+            '/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/u',
+            static fn(array $m): string => $m[1] === $m[2] ? $m[2] : $m[1] . ' ' . $m[2],
+            $text
+        ) ?? $text;
+
+        return $text;
+    }
+
+    /**
      * WhatsApp wants the recipient as digits only, no leading '+'.
      */
     private static function normalizeTo(string $to): string

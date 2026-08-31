@@ -28,6 +28,9 @@ require_once __DIR__ . '/../config/app.php';
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../config/media.php';
 require_once __DIR__ . '/../config/ai.php';
+// For fromMarkdown(). The draft is bound for WhatsApp, and WhatsApp's
+// idea of bold is not the model's.
+require_once __DIR__ . '/../config/whatsapp.php';
 
 require_auth();
 
@@ -69,7 +72,13 @@ try {
         $turns
     );
 
-    $draft = AI::client()->chat($payload, $settings['ai_model']);
+    // Models write Markdown whatever the prompt says, and WhatsApp bold
+    // is one asterisk, not two -- so `**price**` reaches the customer as
+    // a bold word wearing a spare asterisk at each end. Converted here
+    // rather than left to the prompt, because a prompt is a request and
+    // this needs to be a guarantee. The agent sees the corrected text in
+    // the composer and can still edit it.
+    $draft = WhatsApp::fromMarkdown(AI::client()->chat($payload, $settings['ai_model']));
 
     json_response(['success' => true, 'draft' => $draft]);
 } catch (AIException $e) {
