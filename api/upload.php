@@ -93,6 +93,12 @@ try {
         'size'      => $saved['size'],
         'msg_type'  => media_msg_type_for_mime($saved['mime']),
     ], 201);
+} catch (MediaStoreException $e) {
+    // Passed through, unlike the generic rule: a directory the server
+    // cannot write to is the one storage failure whoever is looking at
+    // this can go and fix.
+    error_log('[api/upload] ' . $e->getMessage());
+    json_error($e->getMessage(), $e->httpStatus);
 } catch (WhatsAppException $e) {
     error_log('[api/upload] ' . $e->getMessage());
     json_error($e->getMessage(), 422);

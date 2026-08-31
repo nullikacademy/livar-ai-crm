@@ -44,6 +44,12 @@ try {
         default:
             json_error('Method not allowed', 405);
     }
+} catch (MediaStoreException $e) {
+    // Passed through, unlike the generic rule: a directory the server
+    // cannot write to is the one storage failure whoever is looking at
+    // this can go and fix.
+    error_log('[api/catalog] ' . $e->getMessage());
+    json_error($e->getMessage(), $e->httpStatus);
 } catch (SupabaseException $e) {
     error_log('[api/catalog] ' . $e->getMessage());
     json_error($e->getMessage(), $e->httpStatus);

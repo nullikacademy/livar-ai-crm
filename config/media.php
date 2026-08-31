@@ -28,6 +28,36 @@ declare(strict_types=1);
 require_once __DIR__ . '/load_config.php';
 
 /**
+ * Thrown when the media store itself cannot be written to.
+ *
+ * Its own type, and carrying an httpStatus like the Supabase/WhatsApp/AI
+ * exceptions, because this is the one storage failure an agent can
+ * actually do something about. Flattened into "something went wrong" it
+ * is indistinguishable from a bug in the CRM, and the person reading it
+ * has no reason to go and look at a directory's permissions. A
+ * misconfigured server should say it is a misconfigured server.
+ */
+final class MediaStoreException extends RuntimeException
+{
+    public function __construct(string $message, public readonly int $httpStatus = 500)
+    {
+        parent::__construct($message);
+    }
+}
+
+/**
+ * What to tell a signed-in agent when the store will not accept a file.
+ *
+ * Deliberately points at the settings page rather than repeating the
+ * path and uid here: that check already prints both, and keeps this
+ * message the same wherever it is raised from.
+ */
+const MEDIA_UNWRITABLE_MESSAGE =
+    'The server could not save that file — the media directory is not writable. '
+    . 'Open the settings page: the "Media storage" check names the exact path, '
+    . 'the user PHP runs as, and who owns the directory.';
+
+/**
  * Mime types the CRM will store, and the extension each gets.
  *
  * The extension is always taken from THIS table, never from a filename
@@ -139,14 +169,18 @@ function media_store(string $bytes, string $mime, string $subdir = ''): array
     $dir    = media_root() . '/' . $subdir;
 
     if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
-        throw new RuntimeException('Could not create the media directory: ' . $subdir);
+        // The real detail goes to the log; the browser gets the version
+        // that says which page names the path and the uid.
+        error_log('[WhatsApp] could not create the media directory: ' . $dir);
+        throw new MediaStoreException(MEDIA_UNWRITABLE_MESSAGE, 500);
     }
 
     $relative = $subdir . '/' . bin2hex(random_bytes(16)) . '.' . $ext;
     $abs      = media_root() . '/' . $relative;
 
-    if (file_put_contents($abs, $bytes) === false) {
-        throw new RuntimeException('Could not write the media file to disk.');
+    if (@file_put_contents($abs, $bytes) === false) {
+        error_log('[WhatsApp] could not write a media file to disk: ' . $abs);
+        throw new MediaStoreException(MEDIA_UNWRITABLE_MESSAGE, 500);
     }
     @chmod($abs, 0644);
 
