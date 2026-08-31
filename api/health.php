@@ -219,10 +219,17 @@ function checkSchema(): array
     $detail  = [];
     $missing = [];
 
+    // Every column the app reads or writes, not just the ones the first
+    // WhatsApp release added. A probe that lags behind the code is worse
+    // than no probe: it reports a healthy schema while the app is
+    // answering "the database rejected the request" on every page, which
+    // is the one situation this check exists to explain. Anything added
+    // to sql/schema.sql belongs here in the same commit.
     $probes = [
         'n8n_chat_history' => 'id,created_at,direction,wa_message_id,wa_status,msg_type,wa_media_id,'
-                            . 'media_path,media_mime,media_size,media_name,latitude,longitude,place_name,place_address',
-        'livar_customer'   => 'id,wa_id,wa_profile_name,last_inbound_at',
+                            . 'media_path,media_mime,media_size,media_name,latitude,longitude,place_name,place_address,'
+                            . 'ai_caption,wa_buttons,wa_template,wa_source',
+        'livar_customer'   => 'id,wa_id,wa_profile_name,last_inbound_at,avatar_path,label',
     ];
 
     foreach ($probes as $table => $select) {
@@ -255,7 +262,7 @@ function checkSchema(): array
         Supabase::client()->rpc(
             'get_customers_with_preview',
             ['p_search' => '', 'p_limit' => 1, 'p_offset' => 0],
-            ['select' => 'session_id,wa_id,last_inbound_at,last_activity_at']
+            ['select' => 'session_id,wa_id,last_inbound_at,last_activity_at,avatar_path,label']
         );
         $detail[] = 'get_customers_with_preview: current version';
     } catch (SupabaseException $e) {
