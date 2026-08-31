@@ -471,6 +471,15 @@ function getOrCreateCustomerByWaId(string $waId, string $profileName = ''): arra
     if ($profileName !== '') {
         $payload['wa_profile_name'] = $profileName;
     }
+    // The business may already have this number saved on their phone
+    // without ever having been messaged by it. That name is better than
+    // the one the customer picked for themselves, so it is collected at
+    // the moment the conversation starts -- which is the first point the
+    // contact stops being an address-book entry and becomes a customer.
+    $contactName = getWaContactName($waId);
+    if ($contactName !== null) {
+        $payload['wa_contact_name'] = $contactName;
+    }
     // The country is in the number, so there is no reason to make an
     // agent type it. Only ever written here, on the insert: a later
     // correction by hand must not be overwritten by the prefix table.
@@ -485,6 +494,122 @@ function getOrCreateCustomerByWaId(string $waId, string $profileName = ''): arra
     // A merge upsert always returns the row, but re-read defensively
     // rather than hand a half-built payload to the rest of the webhook.
     return $rows[0] ?? getCustomerByWaId($waId) ?? $payload;
+}
+
+/**
+ * Mirrors the WhatsApp Business app's address book.
+ *
+ * From the smb_app_state_sync coexistence webhook. Onboarding replays
+ * the WHOLE address book, so this writes in ONE bulk upsert rather than
+ * a request per contact -- the webhook has to answer before 360dialog
+ * gives up, and several hundred round trips would not fit.
+ *
+ * Contacts land in their own table, not in livar_customer. Most numbers
+ * in a phone have never messaged the business, and turning each into a
+ * customer would bury the real conversations. The name is collected when
+ * that number first writes in -- see getOrCreateCustomerByWaId().
+ *
+ * Any customer that already exists is updated immediately, though, which
+ * is what makes the sync visible on a directory that is already full.
+ *
+ * @param array<int, array{wa_id: string, full_name: string, first_name: string}> $contacts
+ * @return array{stored: int, matched: int}
+ */
+function syncWaContacts(array $contacts): array
+{
+    $rows = [];
+    foreach ($contacts as $contact) {
+        $waId = normalizeWaId((string) ($contact['wa_id'] ?? ''));
+        $full = trim((string) ($contact['full_name'] ?? ''));
+        $first = trim((string) ($contact['first_name'] ?? ''));
+
+        // A contact with no name is the phone telling us about a number
+        // it has nothing to add about.
+        if ($waId === '' || ($full === '' && $first === '')) {
+            continue;
+        }
+
+        // Keyed by wa_id so a repeated number within one batch collapses
+        // instead of making the upsert fail on a duplicate key.
+        $rows[$waId] = [
+            'wa_id'      => $waId,
+            'full_name'  => $full !== '' ? mb_substr($full, 0, 200) : $first,
+            'first_name' => $first !== '' ? mb_substr($first, 0, 200) : null,
+            'updated_at' => gmdate('c'),
+        ];
+    }
+
+    if (!$rows) {
+        return ['stored' => 0, 'matched' => 0];
+    }
+
+    $sb = Supabase::client();
+    $sb->upsert('livar_wa_contact', array_values($rows), 'wa_id');
+
+    // Light up the customers that already exist. One PATCH per name
+    // rather than one per contact: only numbers already in the directory
+    // are touched, which on a real inbox is a small fraction of a phone.
+    $matched = 0;
+    foreach ($rows as $waId => $row) {
+        try {
+            $updated = $sb->patch(
+                'livar_customer',
+                ['wa_id' => 'eq.' . $waId],
+                ['wa_contact_name' => $row['full_name']]
+            );
+            $matched += count($updated);
+        } catch (SupabaseException $e) {
+            error_log('[WhatsApp] could not apply a synced contact name to ' . $waId . ': ' . $e->getMessage());
+        }
+    }
+
+    return ['stored' => count($rows), 'matched' => $matched];
+}
+
+/**
+ * Forgets a contact the business deleted from their phone.
+ *
+ * Only the mirrored name goes: the customer, their conversation and
+ * anything an agent typed all stay. Deleting a phone contact says
+ * nothing about whether the CRM should still know who they are.
+ */
+function forgetWaContact(string $waId): void
+{
+    $waId = normalizeWaId($waId);
+    if ($waId === '') {
+        return;
+    }
+
+    $sb = Supabase::client();
+    $sb->delete('livar_wa_contact', ['wa_id' => 'eq.' . $waId]);
+    $sb->patch('livar_customer', ['wa_id' => 'eq.' . $waId], ['wa_contact_name' => null]);
+}
+
+/**
+ * The name the business has saved for a number, if any.
+ */
+function getWaContactName(string $waId): ?string
+{
+    $waId = normalizeWaId($waId);
+    if ($waId === '') {
+        return null;
+    }
+
+    try {
+        $result = Supabase::client()->get('livar_wa_contact', [
+            'wa_id'  => 'eq.' . $waId,
+            'select' => 'full_name',
+            'limit'  => '1',
+        ]);
+    } catch (SupabaseException $e) {
+        // An un-migrated database has no such table. A missing nicety
+        // must never cost us the inbound message that asked for it.
+        error_log('[WhatsApp] could not read the synced contact name: ' . $e->getMessage());
+        return null;
+    }
+
+    $name = trim((string) ($result['rows'][0]['full_name'] ?? ''));
+    return $name !== '' ? $name : null;
 }
 
 /**

@@ -404,6 +404,44 @@ messages sent from the moment coexistence is on. Meta does offer a
 one-time history sync on a separate `history` webhook; this CRM does not
 read it yet.
 
+#### Your phone's contact names
+
+Coexistence also mirrors the WhatsApp Business app's address book, on the
+`smb_app_state_sync` webhook. If you have a number saved as "Ahmed — Al
+Fahed Building", that is what the CRM shows — rather than whatever the
+customer has set as their own WhatsApp name, or a bare number.
+
+Four names can exist for one customer, and they are ranked by how
+deliberate they are:
+
+1. what an agent typed into the details panel here;
+2. **the name saved on your phone** (`wa_contact_name`);
+3. the company field;
+4. the customer's own WhatsApp profile name.
+
+Both read-only names appear in the details panel with a **Use as name**
+button, so either can be promoted into the editable fields in one click.
+
+Two deliberate limits:
+
+- **Contacts do not become customers.** Onboarding replays your whole
+  address book — plumbers, family, everyone — and turning each into a CRM
+  record would bury the actual conversations. Contacts go into their own
+  `livar_wa_contact` table; the name is attached to a customer only when
+  that number actually messages you. Numbers already in the directory are
+  updated immediately, so a sync lights up the customers you have.
+- **Deleting a contact on your phone does not delete anything here.** It
+  clears the mirrored name and nothing else: the customer, their history
+  and anything an agent typed all stay. A deleted phone contact says
+  nothing about whether the CRM should still know who they are.
+
+**Profile pictures are not available.** Not from the Cloud API and not
+from coexistence — Meta does not expose a contact's picture to a
+business, deliberately. Services that offer it drive an unofficial
+WhatsApp Web session against your account, which breaks Meta's terms and
+risks the number. The details panel's **Change photo** is the way to give
+a customer a picture; without one, the avatar is their initials.
+
 ### A reply goes out
 
 - **Draft** sends the conversation history and customer context to

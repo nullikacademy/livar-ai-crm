@@ -43,6 +43,20 @@ README** — the template stays placeholders-only.
   `smb_message_echoes` branch, which mirrors messages sent from the
   WhatsApp app. The table keeps its legacy name; nothing outside this app
   writes to it.
+- **A phone contact is not a customer.** `smb_app_state_sync` replays the
+  business's whole address book, most of which has never messaged them.
+  It lands in `livar_wa_contact`, and only becomes a name on a
+  `livar_customer` when that number actually writes in
+  (`getOrCreateCustomerByWaId()`). Creating a customer per contact would
+  bury the real conversations in the sidebar. The sync writes in ONE bulk
+  upsert because it runs before the webhook acks and the initial replay
+  can be hundreds of rows. A contact deleted on the phone clears
+  `wa_contact_name` and nothing else — never the customer, never history.
+- **There is no way to get a customer's profile picture.** Not the Cloud
+  API, not coexistence; Meta withholds it deliberately. Anything offering
+  it drives an unofficial WhatsApp Web session and risks the number, so
+  never wire one in. `api/avatar.php` (an agent uploading one) is the
+  only source, and initials are the fallback.
 - **An echo is outbound, and reads `to`, not `from`.** In
   `smb_message_echoes` the business is the sender, so `from` is our own
   number; filing on it would put every mirrored message against a

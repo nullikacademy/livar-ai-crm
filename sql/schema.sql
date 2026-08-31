@@ -37,7 +37,13 @@ alter table public.livar_customer
     -- 'new' | 'old' | null. Written as 'new' when the inbound webhook
     -- first meets a number, and changed by hand after that. See
     -- CUSTOMER_LABELS in config/db_functions.php.
-    add column if not exists label           text;
+    add column if not exists label           text,
+    -- The name the BUSINESS has saved for this number in the WhatsApp
+    -- Business app's address book, mirrored by the smb_app_state_sync
+    -- coexistence webhook. Distinct from wa_profile_name, which is what
+    -- the customer calls themselves, and from first/last_name, which an
+    -- agent typed here. Never overwrites those.
+    add column if not exists wa_contact_name text;
 
 create index if not exists idx_livar_customer_session_id on public.livar_customer (session_id);
 create index if not exists idx_livar_customer_created_at on public.livar_customer (created_at desc);
@@ -136,6 +142,22 @@ create unique index if not exists idx_chat_wa_message_id
 create index if not exists idx_chat_created_at
     on public.n8n_chat_history (session_id, created_at desc);
 
+-- Phone address book -----------------------------------------------------
+-- What the smb_app_state_sync coexistence webhook mirrors: the contacts
+-- saved in the WhatsApp Business app. Its own table rather than rows in
+-- livar_customer, because onboarding replays the WHOLE address book --
+-- hundreds of numbers, most of which have never messaged the business.
+-- Turning each into a customer would bury the real conversations in the
+-- sidebar. A contact in a phone is not a conversation; it is a name
+-- waiting for one, which getOrCreateCustomerByWaId() collects when that
+-- number first writes in.
+create table if not exists public.livar_wa_contact (
+    wa_id      text primary key,
+    full_name  text,
+    first_name text,
+    updated_at timestamptz not null default now()
+);
+
 -- Editable application settings ------------------------------------------
 -- The AI system prompt and model live here rather than in
 -- config/config.php, because the settings page has to be able to change
@@ -191,6 +213,7 @@ returns table (
     -- whole point of this function.
     avatar_path        text,
     label              text,
+    wa_contact_name    text,
     last_message       text,
     last_message_type  text,
     last_activity_id   bigint,
@@ -218,7 +241,7 @@ as $$
     select
         f.id, f.created_at, f.session_id, f.first_name, f.last_name, f.username,
         f.phone, f.country, f.email, f.city, f.address, f.tax_id, f.details,
-        f.wa_id, f.wa_profile_name, f.last_inbound_at, f.avatar_path, f.label,
+        f.wa_id, f.wa_profile_name, f.last_inbound_at, f.avatar_path, f.label, f.wa_contact_name,
         -- A photo must not read as "No messages yet" in the sidebar, so
         -- media rows get a short label instead of their (empty) content.
         case lm.msg_type

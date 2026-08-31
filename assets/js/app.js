@@ -137,10 +137,17 @@
 
     function fullName(customer) {
         const name = [customer.first_name, customer.last_name].filter(Boolean).join(' ').trim();
-        // wa_profile_name is whatever the customer calls themselves on
-        // WhatsApp. It sits below an agent-entered name but above the
-        // bare number, which is what a first contact would otherwise show.
+        // Four names, most deliberate first:
+        //   - what an agent typed into the details panel here;
+        //   - wa_contact_name, what the business saved for this number in
+        //     the WhatsApp app's address book, mirrored by the
+        //     smb_app_state_sync webhook -- "Ahmed — Al Fahed Building";
+        //   - username, which is the company field;
+        //   - wa_profile_name, what the CUSTOMER calls themselves, which
+        //     is the only one of the four nobody here chose.
+        // The bare number is the last resort a first contact would show.
         return name
+            || customer.wa_contact_name
             || customer.username
             || customer.wa_profile_name
             || customer.phone
@@ -2212,6 +2219,11 @@
         document.getElementById('waNameField').hidden = waName === '';
         document.getElementById('field_wa_profile_name').textContent = waName || '—';
 
+        // What the business has this number saved as on the phone.
+        const contactName = state.selectedCustomer.wa_contact_name || '';
+        document.getElementById('waContactField').hidden = contactName === '';
+        document.getElementById('field_wa_contact_name').textContent = contactName || '—';
+
         el.panelOverlay.hidden = false;
         requestAnimationFrame(() => {
             el.detailsPanel.classList.add('is-open');
@@ -2347,14 +2359,21 @@
     // Copies the WhatsApp name into the editable fields, so an agent can
     // make it the customer's real name in one click instead of retyping
     // a name that is already on screen.
-    document.getElementById('useWaNameBtn').addEventListener('click', () => {
-        const waName = state.selectedCustomer?.wa_profile_name || '';
-        if (!waName) return;
-
-        const parts = waName.trim().split(/\s+/);
+    /** Splits a one-line name across the first/last fields. */
+    function adoptAsName(name) {
+        if (!name) return;
+        const parts = name.trim().split(/\s+/);
         document.getElementById('field_first_name').value = parts.shift() || '';
         document.getElementById('field_last_name').value = parts.join(' ');
         document.getElementById('field_first_name').focus();
+    }
+
+    document.getElementById('useWaNameBtn').addEventListener('click', () => {
+        adoptAsName(state.selectedCustomer?.wa_profile_name || '');
+    });
+
+    document.getElementById('useContactNameBtn').addEventListener('click', () => {
+        adoptAsName(state.selectedCustomer?.wa_contact_name || '');
     });
 
     el.chatCustomerBtn.addEventListener('click', openDetailsPanel);

@@ -41,6 +41,21 @@
             </div>
         </div>
 
+        <!--
+            The name saved for this number in the WhatsApp Business app's
+            address book, mirrored by the smb_app_state_sync coexistence
+            webhook. Read-only for the same reason as the one above: it
+            belongs to the phone, and editing it here would be edited
+            back on the next sync.
+        -->
+        <div class="field" id="waContactField" hidden>
+            <label>Saved on your phone as</label>
+            <div class="details-form__readonly details-form__readonly--name">
+                <span id="field_wa_contact_name">—</span>
+                <button type="button" class="btn-link" id="useContactNameBtn">Use as name</button>
+            </div>
+        </div>
+
         <div class="details-form__row details-form__row--2">
             <div class="field">
                 <label for="field_first_name">First name</label>

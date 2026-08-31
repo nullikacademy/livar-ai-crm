@@ -159,6 +159,31 @@ final class Supabase
     }
 
     /**
+     * DELETE, filtered by PostgREST query params.
+     *
+     * The one caller is the address-book mirror dropping a contact the
+     * business deleted from their phone. Nothing in this app deletes a
+     * customer or a message: a conversation that happened is a fact, and
+     * the CRM has no undo.
+     *
+     * A filter is required, not optional -- PostgREST reads a DELETE with
+     * no query as "every row in the table", and there is no version of
+     * that which is ever what someone meant.
+     *
+     * @param array<string, string> $query
+     * @return array<int, array<string, mixed>>
+     */
+    public function delete(string $path, array $query): array
+    {
+        if (!$query) {
+            throw new SupabaseException('Refusing to delete from ' . $path . ' with no filter.', 400);
+        }
+
+        [$body] = $this->request('DELETE', $path, $query, null, ['Prefer: return=representation']);
+        return is_array($body) ? $body : [];
+    }
+
+    /**
      * Calls a Postgres function exposed via PostgREST (POST /rpc/<fn>).
      *
      * $query takes the same params a table read does -- notably `select`,

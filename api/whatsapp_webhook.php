@@ -147,6 +147,15 @@ function handle_payload(array $payload): array
                 }
             }
 
+            // The business's own address book, mirrored from the phone.
+            if (isset($value['state_sync']) && is_array($value['state_sync'])) {
+                try {
+                    handle_state_sync($value['state_sync']);
+                } catch (Throwable $e) {
+                    error_log('[WhatsApp] could not sync contacts: ' . $e->getMessage());
+                }
+            }
+
             foreach (($value['statuses'] ?? []) as $status) {
                 if (!is_array($status)) {
                     continue;
@@ -439,6 +448,76 @@ function extract_message_fields(array $message, string $direction = 'in'): array
                 'msg_type'  => 'unsupported',
                 'content'   => '',
             ];
+    }
+}
+
+/**
+ * Mirrors the WhatsApp Business app's contacts.
+ *
+ * This is the `smb_app_state_sync` webhook, another coexistence one:
+ * after onboarding it replays the whole address book, then sends
+ * additions and changes as they happen. The point is that the name the
+ * BUSINESS saved -- "Ahmed — Al Fahed Building" -- beats the one the
+ * customer picked for themselves, and nobody should have to retype it.
+ *
+ * Everything is collected first and written in one bulk upsert. The
+ * initial replay can be hundreds of contacts and this runs before the
+ * webhook acks; a request per contact would not finish in time.
+ *
+ * @param array<int, mixed> $entries
+ */
+function handle_state_sync(array $entries): void
+{
+    $contacts = [];
+    $removed  = [];
+
+    foreach ($entries as $entry) {
+        if (!is_array($entry) || ($entry['type'] ?? 'contact') !== 'contact') {
+            // Some other kind of app state. Recorded rather than
+            // guessed at: this webhook is documented as carrying
+            // contacts, and anything else is a shape worth seeing.
+            error_log('[WhatsApp] unhandled state_sync entry: ' . json_encode($entry));
+            continue;
+        }
+
+        $contact = is_array($entry['contact'] ?? null) ? $entry['contact'] : [];
+        $waId    = normalizeWaId((string) ($contact['phone_number'] ?? ''));
+        if ($waId === '') {
+            continue;
+        }
+
+        // The action vocabulary is not something to guess at, so this
+        // reads the one meaning that matters -- is the contact gone? --
+        // and treats everything else as add-or-update, which is what
+        // the sync is overwhelmingly made of.
+        $action = strtolower((string) ($entry['action'] ?? ''));
+        if (str_contains($action, 'delete') || str_contains($action, 'remove')) {
+            $removed[] = $waId;
+            continue;
+        }
+
+        $contacts[] = [
+            'wa_id'      => $waId,
+            'full_name'  => (string) ($contact['full_name'] ?? ''),
+            'first_name' => (string) ($contact['first_name'] ?? ''),
+        ];
+    }
+
+    if ($contacts) {
+        $result = syncWaContacts($contacts);
+        error_log(sprintf(
+            '[WhatsApp] synced %d contact(s) from the phone; %d matched an existing customer',
+            $result['stored'],
+            $result['matched']
+        ));
+    }
+
+    foreach ($removed as $waId) {
+        try {
+            forgetWaContact($waId);
+        } catch (Throwable $e) {
+            error_log('[WhatsApp] could not forget contact ' . $waId . ': ' . $e->getMessage());
+        }
     }
 }
 
