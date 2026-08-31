@@ -297,6 +297,80 @@ final class AI
     // -----------------------------------------------------------------
 
     /**
+     * POSTs a chat completion, adapting the payload to what the chosen
+     * model actually accepts.
+     *
+     * OpenAI's parameter surface differs per model family: newer ones
+     * reject `max_tokens` and require `max_completion_tokens`, and the
+     * reasoning models reject any `temperature` but the default. Since
+     * the model is picked by whoever edits the settings page, this cannot
+     * be decided from a hardcoded list of names -- that list would be
+     * wrong the day a new model ships, which is exactly when someone
+     * would be trying it.
+     *
+     * So the API's own error is the source of truth: it names the
+     * offending parameter and often the replacement, and we retry.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function completion(array $payload): array
+    {
+        // One attempt per parameter that could need adapting, plus one.
+        for ($attempt = 0; $attempt < 4; $attempt++) {
+            try {
+                return $this->post('/chat/completions', $payload, 90);
+            } catch (AIException $e) {
+                if ($e->httpStatus !== 400) {
+                    throw $e;
+                }
+                $adapted = self::adaptPayload($payload, $e->getMessage());
+                if ($adapted === null) {
+                    throw $e;
+                }
+                error_log('[AI] retrying with an adapted payload after: ' . $e->getMessage());
+                $payload = $adapted;
+            }
+        }
+
+        throw new AIException('Could not find a request this model accepts.', 400);
+    }
+
+    /**
+     * Rewrites a payload in response to a parameter complaint, or returns
+     * null when the error is not about a parameter we can drop or rename.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>|null
+     */
+    private static function adaptPayload(array $payload, string $error): ?array
+    {
+        // "Unsupported parameter: 'max_tokens' is not supported with this
+        //  model. Use 'max_completion_tokens' instead."
+        if (preg_match("/'([a-z_]+)'.*?[Uu]se '([a-z_]+)' instead/", $error, $m)) {
+            [, $from, $to] = $m;
+            if (array_key_exists($from, $payload) && !array_key_exists($to, $payload)) {
+                $payload[$to] = $payload[$from];
+                unset($payload[$from]);
+                return $payload;
+            }
+        }
+
+        // "Unsupported value: 'temperature' does not support 0.4 with
+        //  this model." Reasoning models only accept the default, so the
+        //  parameter is dropped rather than guessed at.
+        if (preg_match("/[Uu]nsupported (?:value|parameter): '([a-z_]+)'/", $error, $m)) {
+            $name = $m[1];
+            if ($name !== 'messages' && $name !== 'model' && array_key_exists($name, $payload)) {
+                unset($payload[$name]);
+                return $payload;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */
