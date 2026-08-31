@@ -41,6 +41,20 @@ final class AI
     private string $baseUrl;
     private string $apiKey;
 
+    /**
+     * Which request dialect each model turned out to want.
+     *
+     * See chat(): OpenAI renamed `max_tokens` to `max_completion_tokens`
+     * and newer models reject the old name outright, while an
+     * OpenAI-compatible endpoint behind a custom OPENAI_BASE_URL may only
+     * know the old one. Rather than keep a model list that goes stale,
+     * the client sends the modern spelling and remembers what the
+     * provider said if it complained.
+     *
+     * @var array<string, array{tokens: string, temperature: bool}>
+     */
+    private array $dialects = [];
+
     private function __construct()
     {
         $key = defined('OPENAI_API_KEY') ? (string) OPENAI_API_KEY : '';
@@ -84,28 +98,114 @@ final class AI
      * $messages is the OpenAI messages array, so a `content` may be a
      * plain string or an array of parts -- which is how images travel.
      *
+     * The token cap is sent as `max_completion_tokens`. `max_tokens` is
+     * the deprecated spelling and the newer models -- the o-series, and
+     * gpt-5 and later -- refuse a request that uses it, which is a hard
+     * 400 rather than a warning. The same models also refuse a
+     * `temperature` other than the default.
+     *
+     * Neither is decided from the model NAME. A hardcoded family list is
+     * exactly the kind of thing that is wrong the week a new model ships,
+     * and OPENAI_BASE_URL can point at an OpenAI-compatible service with
+     * its own rules. Instead the modern spelling goes out first and the
+     * provider's own 400 -- which names the parameter it wants -- is used
+     * to correct the request and retry it. What it said is remembered for
+     * the rest of the request, so a second draft does not pay for the
+     * same lesson twice.
+     *
      * @param array<int, array<string, mixed>> $messages
      */
     public function chat(array $messages, string $model, float $temperature = 0.4, int $maxTokens = 900): string
     {
-        $response = $this->completion([
-            'model'                 => $model,
-            'messages'              => $messages,
-            'temperature'           => $temperature,
-            // Newer models require this name; older ones require
-            // max_tokens. completion() sorts that out from the API's own
-            // error rather than from a list of model names here.
-            'max_completion_tokens' => $maxTokens,
-        ]);
+        $dialect = $this->dialects[$model] ??= ['tokens' => 'max_completion_tokens', 'temperature' => true];
+
+        // One attempt per thing that can be wrong, plus the real one.
+        for ($attempt = 0; ; $attempt++) {
+            $payload = ['model' => $model, 'messages' => $messages];
+            $payload[$dialect['tokens']] = $maxTokens;
+            if ($dialect['temperature']) {
+                $payload['temperature'] = $temperature;
+            }
+
+            try {
+                $response = $this->post('/chat/completions', $payload, 90);
+                break;
+            } catch (AIException $e) {
+                $corrected = self::correctDialect($dialect, $e);
+                if ($corrected === null || $attempt >= 2) {
+                    throw $e;
+                }
+
+                error_log("[AI] {$model} rejected the request; retrying as "
+                    . json_encode($corrected) . ': ' . $e->getMessage());
+                $dialect = $this->dialects[$model] = $corrected;
+            }
+        }
 
         $text = $response['choices'][0]['message']['content'] ?? '';
 
         if (!is_string($text) || trim($text) === '') {
             error_log('[AI] completion came back empty: ' . json_encode($response));
+
+            // A reasoning model spends the same budget on thinking as on
+            // writing, so it can hit the cap before a single word of the
+            // reply exists. That is a limit to raise, not a fault to
+            // retry, and saying so is the difference between the two.
+            if (($response['choices'][0]['finish_reason'] ?? '') === 'length') {
+                throw new AIException(
+                    'The model used its whole ' . $maxTokens . '-token budget before writing a reply. '
+                    . 'A reasoning model needs a larger one — try a non-reasoning model for drafts.',
+                    502
+                );
+            }
+
             throw new AIException('The AI returned an empty reply.', 502);
         }
 
         return trim($text);
+    }
+
+    /**
+     * Reads a 400 and works out what to send differently next time.
+     *
+     * Returns null when the failure has nothing to do with the dialect --
+     * a bad key, an unknown model, no credit -- so the caller rethrows
+     * instead of retrying something that will fail identically.
+     *
+     * @param array{tokens: string, temperature: bool} $dialect
+     * @return array{tokens: string, temperature: bool}|null
+     */
+    private static function correctDialect(array $dialect, AIException $e): ?array
+    {
+        if ($e->httpStatus !== 400) {
+            return null;
+        }
+
+        $message = strtolower($e->getMessage());
+
+        // "Unsupported parameter: 'max_completion_tokens' ..." from an
+        // older or third-party endpoint that only knows the legacy name.
+        if ($dialect['tokens'] === 'max_completion_tokens' && str_contains($message, 'max_completion_tokens')) {
+            $dialect['tokens'] = 'max_tokens';
+            return $dialect;
+        }
+
+        // "... 'max_tokens' is not supported with this model. Use
+        // 'max_completion_tokens' instead." -- the case this whole dance
+        // exists for, reachable after the fallback above guessed wrong.
+        if ($dialect['tokens'] === 'max_tokens' && str_contains($message, 'max_completion_tokens')) {
+            $dialect['tokens'] = 'max_completion_tokens';
+            return $dialect;
+        }
+
+        // "Unsupported value: 'temperature' does not support 0.4 with
+        // this model. Only the default (1) value is supported."
+        if ($dialect['temperature'] && str_contains($message, 'temperature')) {
+            $dialect['temperature'] = false;
+            return $dialect;
+        }
+
+        return null;
     }
 
     /**
@@ -195,80 +295,6 @@ final class AI
     // -----------------------------------------------------------------
     // Transport
     // -----------------------------------------------------------------
-
-    /**
-     * POSTs a chat completion, adapting the payload to what the chosen
-     * model actually accepts.
-     *
-     * OpenAI's parameter surface differs per model family: newer ones
-     * reject `max_tokens` and require `max_completion_tokens`, and the
-     * reasoning models reject any `temperature` but the default. Since
-     * the model is picked by whoever edits the settings page, this cannot
-     * be decided from a hardcoded list of names -- that list would be
-     * wrong the day a new model ships, which is exactly when someone
-     * would be trying it.
-     *
-     * So the API's own error is the source of truth: it names the
-     * offending parameter and often the replacement, and we retry.
-     *
-     * @param array<string, mixed> $payload
-     * @return array<string, mixed>
-     */
-    private function completion(array $payload): array
-    {
-        // One attempt per parameter that could need adapting, plus one.
-        for ($attempt = 0; $attempt < 4; $attempt++) {
-            try {
-                return $this->post('/chat/completions', $payload, 90);
-            } catch (AIException $e) {
-                if ($e->httpStatus !== 400) {
-                    throw $e;
-                }
-                $adapted = self::adaptPayload($payload, $e->getMessage());
-                if ($adapted === null) {
-                    throw $e;
-                }
-                error_log('[AI] retrying with an adapted payload after: ' . $e->getMessage());
-                $payload = $adapted;
-            }
-        }
-
-        throw new AIException('Could not find a request this model accepts.', 400);
-    }
-
-    /**
-     * Rewrites a payload in response to a parameter complaint, or returns
-     * null when the error is not about a parameter we can drop or rename.
-     *
-     * @param array<string, mixed> $payload
-     * @return array<string, mixed>|null
-     */
-    private static function adaptPayload(array $payload, string $error): ?array
-    {
-        // "Unsupported parameter: 'max_tokens' is not supported with this
-        //  model. Use 'max_completion_tokens' instead."
-        if (preg_match("/'([a-z_]+)'.*?[Uu]se '([a-z_]+)' instead/", $error, $m)) {
-            [, $from, $to] = $m;
-            if (array_key_exists($from, $payload) && !array_key_exists($to, $payload)) {
-                $payload[$to] = $payload[$from];
-                unset($payload[$from]);
-                return $payload;
-            }
-        }
-
-        // "Unsupported value: 'temperature' does not support 0.4 with
-        //  this model." Reasoning models only accept the default, so the
-        //  parameter is dropped rather than guessed at.
-        if (preg_match("/[Uu]nsupported (?:value|parameter): '([a-z_]+)'/", $error, $m)) {
-            $name = $m[1];
-            if ($name !== 'messages' && $name !== 'model' && array_key_exists($name, $payload)) {
-                unset($payload[$name]);
-                return $payload;
-            }
-        }
-
-        return null;
-    }
 
     /**
      * @param array<string, mixed> $payload

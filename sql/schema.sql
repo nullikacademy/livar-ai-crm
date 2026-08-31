@@ -29,7 +29,15 @@ create table if not exists public.livar_customer (
 alter table public.livar_customer
     add column if not exists wa_id           text,
     add column if not exists wa_profile_name text,
-    add column if not exists last_inbound_at timestamptz;
+    add column if not exists last_inbound_at timestamptz,
+    -- Profile photo, as a path inside storage/media. WhatsApp does not
+    -- hand out a contact's own picture, so this is one an agent set;
+    -- api/avatar.php is the only writer, and the only reader.
+    add column if not exists avatar_path     text,
+    -- 'new' | 'old' | null. Written as 'new' when the inbound webhook
+    -- first meets a number, and changed by hand after that. See
+    -- CUSTOMER_LABELS in config/db_functions.php.
+    add column if not exists label           text;
 
 create index if not exists idx_livar_customer_session_id on public.livar_customer (session_id);
 create index if not exists idx_livar_customer_created_at on public.livar_customer (created_at desc);
@@ -78,7 +86,23 @@ alter table public.n8n_chat_history
     add column if not exists wa_message_id text,
     add column if not exists wa_status     text,          -- sent|delivered|read|failed
     add column if not exists wa_error      text,
-    add column if not exists msg_type      text,          -- text|image|video|audio|document|location|sticker|unsupported
+    -- text|image|video|audio|document|location|sticker|template|
+    -- buttons|reply|unsupported. 'buttons' is a question the CRM asked
+    -- with tappable options; 'reply' is the customer tapping one.
+    add column if not exists msg_type      text,
+    -- The option labels of a 'buttons' question, as a JSON array. One
+    -- column rather than a side table: three short strings that are only
+    -- ever read with their own row do not earn a join.
+    add column if not exists wa_buttons    text,
+    -- Which approved template a 'template' row was sent from. The row's
+    -- content is the template already filled in, which is what the
+    -- customer saw; this records what it was built from.
+    add column if not exists wa_template   text,
+    -- Where an outbound message was written: 'crm' from this app, 'app'
+    -- from the WhatsApp Business app on somebody's phone, mirrored back
+    -- by the smb_message_echoes coexistence webhook. Null on inbound
+    -- rows and on anything written before this column existed.
+    add column if not exists wa_source     text,
     -- The provider's media id, kept so api/media.php can re-download a
     -- file the webhook never managed to fetch. Meta expires media after
     -- roughly 30 days, after which this is only a record of what was.
@@ -162,6 +186,11 @@ returns table (
     -- typed a name for, which is most of a real inbox.
     wa_profile_name    text,
     last_inbound_at    timestamptz,
+    -- Needed by the sidebar, which shows the photo and the label on
+    -- every row. Fetching them per customer afterwards would undo the
+    -- whole point of this function.
+    avatar_path        text,
+    label              text,
     last_message       text,
     last_message_type  text,
     last_activity_id   bigint,
@@ -189,7 +218,7 @@ as $$
     select
         f.id, f.created_at, f.session_id, f.first_name, f.last_name, f.username,
         f.phone, f.country, f.email, f.city, f.address, f.tax_id, f.details,
-        f.wa_id, f.wa_profile_name, f.last_inbound_at,
+        f.wa_id, f.wa_profile_name, f.last_inbound_at, f.avatar_path, f.label,
         -- A photo must not read as "No messages yet" in the sidebar, so
         -- media rows get a short label instead of their (empty) content.
         case lm.msg_type
@@ -201,6 +230,10 @@ as $$
             when 'document' then '📄 ' || coalesce(lm.media_name, 'Document')
             when 'location' then '📍 Location'
             when 'sticker'  then '🙂 Sticker'
+            -- A question we asked, and the answer that came back. Both
+            -- read better with their own marker than as bare text.
+            when 'buttons'  then '❓ ' || coalesce(nullif(lm.content, ''), 'Question')
+            when 'reply'    then '↩ '  || coalesce(nullif(lm.content, ''), 'Answered')
             -- Something arrived that the CRM cannot render. Still needs a
             -- preview, or the sidebar claims there are no messages at all.
             when 'unsupported' then '📎 Attachment'

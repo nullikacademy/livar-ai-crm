@@ -23,7 +23,7 @@ declare(strict_types=1);
 /**
  * Bump this on every change. Patch for a fix, minor for a feature.
  */
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.2.0';
 
 /**
  * Version plus, where git is available, the deployed commit.

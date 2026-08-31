@@ -6,8 +6,15 @@
  *   PUT  /api/settings.php            -> save { ai_system_prompt, ai_model }
  *
  * The editable half of the settings page. Only keys declared in
- * SETTING_DEFAULTS can be read or written, so this endpoint can never be
- * used to poke at anything else in livar_settings.
+ * SETTING_DEFAULTS exist at all, and of those only the ones in
+ * SETTING_AGENT_EDITABLE can be read or written here -- so this endpoint
+ * can never be used to poke at anything else in livar_settings.
+ *
+ * The catalog is the reason those are two different lists. It lives in
+ * livar_settings like everything else, but one of its keys is a path
+ * inside storage/, and an endpoint that wrote it from a JSON body would
+ * be letting the browser choose a file for api/send.php to open. It is
+ * uploaded through api/catalog.php instead, and only summarised here.
  *
  * API keys are NOT settings and are not reachable here -- they stay in
  * config/config.php, which the app never writes to.
@@ -44,14 +51,12 @@ try {
 
 function handleGet(): void
 {
-    $settings = getSettings();
-
     json_response([
         'success'  => true,
-        'settings' => $settings,
+        'settings' => editableOnly(getSettings()),
         // Sent so the page can offer "reset to default" without hardcoding
         // a copy of the prompt in JavaScript that would drift from PHP.
-        'defaults' => SETTING_DEFAULTS,
+        'defaults' => editableOnly(SETTING_DEFAULTS),
         'models'   => availableModels(),
     ]);
 }
@@ -61,7 +66,7 @@ function handleSave(): void
     $data  = read_json_body();
     $saved = [];
 
-    foreach (array_keys(SETTING_DEFAULTS) as $key) {
+    foreach (SETTING_AGENT_EDITABLE as $key) {
         if (!array_key_exists($key, $data)) {
             continue;
         }
@@ -78,7 +83,21 @@ function handleSave(): void
 
     // Re-read rather than echo the input back, so the page shows what is
     // actually stored -- including a default restored by saving a blank.
-    json_response(['success' => true, 'saved' => $saved, 'settings' => freshSettings()]);
+    json_response(['success' => true, 'saved' => $saved, 'settings' => editableOnly(freshSettings())]);
+}
+
+/**
+ * Narrows a settings map to the keys this endpoint owns.
+ *
+ * `catalog_path` is the one that matters: it is a location inside
+ * storage/, and there is no reason for it to reach a browser at all.
+ *
+ * @param array<string, string> $settings
+ * @return array<string, string>
+ */
+function editableOnly(array $settings): array
+{
+    return array_intersect_key($settings, array_flip(SETTING_AGENT_EDITABLE));
 }
 
 /**

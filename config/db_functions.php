@@ -11,6 +11,10 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/database.php';
+require_once __DIR__ . '/countries.php';
+// getCatalogFile() has to resolve a stored path safely, and the rules
+// for that are written once, in media.php.
+require_once __DIR__ . '/media.php';
 
 /**
  * The editable customer profile fields.
@@ -19,12 +23,29 @@ require_once __DIR__ . '/database.php';
  * column missing from this list is silently unwritable. `last_inbound_at`
  * is deliberately absent: it is owned by the inbound webhook (see
  * touchLastInbound()) and must never be settable from the details form,
- * since it is what gates outbound sending.
+ * since it is what gates outbound sending. So is `avatar_path`, which is
+ * a location on disk -- api/avatar.php writes it after storing a file it
+ * validated itself, and nothing a browser sends ever becomes a path.
  */
 const CUSTOMER_PROFILE_FIELDS = [
     'first_name', 'last_name', 'username', 'phone',
     'country', 'email', 'city', 'address', 'tax_id', 'details',
-    'wa_id', 'wa_profile_name',
+    'wa_id', 'wa_profile_name', 'label',
+];
+
+/**
+ * The labels a customer can carry, and how each is written on screen.
+ *
+ * A closed set rather than free text: the whole point is to be able to
+ * tell at a glance which conversations are first contacts, and that
+ * stops working the moment "New"/"new "/"NEW customer" are three
+ * different labels. A customer created by the inbound webhook starts as
+ * 'new'; an agent moves them to 'old' (or clears it) from the details
+ * panel.
+ */
+const CUSTOMER_LABELS = [
+    'new' => 'New customer',
+    'old' => 'Old customer',
 ];
 
 /**
@@ -108,6 +129,57 @@ function getCustomer(string $sessionId): ?array
 }
 
 /**
+ * Reduces a label to one of CUSTOMER_LABELS, or null.
+ *
+ * Anything unrecognised becomes null rather than an error: a label is a
+ * convenience, and refusing to save a customer's address because their
+ * label was odd would be the wrong trade.
+ */
+function normalizeCustomerLabel(mixed $label): ?string
+{
+    if (!is_string($label)) {
+        return null;
+    }
+
+    $label = strtolower(trim($label));
+    return isset(CUSTOMER_LABELS[$label]) ? $label : null;
+}
+
+/**
+ * Shapes a customer row for the browser.
+ *
+ * Two things happen here, and both are the reason this exists rather
+ * than handing the row straight out:
+ *
+ *  - `avatar_path` is a location inside storage/ and never leaves the
+ *    server. It becomes an api/avatar.php URL instead, carrying a short
+ *    fingerprint of the path so replacing a photo busts the cache.
+ *  - The country is DERIVED from the number on every read rather than
+ *    stored, so a customer whose row predates this still gets a flag,
+ *    and correcting a phone number corrects the flag with it.
+ *
+ * @param array<string, mixed> $customer
+ * @return array<string, mixed>
+ */
+function customerForBrowser(array $customer): array
+{
+    $avatarPath = (string) ($customer['avatar_path'] ?? '');
+    unset($customer['avatar_path']);
+
+    $customer['avatar_url'] = $avatarPath !== ''
+        ? 'api/avatar.php?session_id=' . rawurlencode((string) ($customer['session_id'] ?? ''))
+          . '&v=' . substr(md5($avatarPath), 0, 8)
+        : null;
+
+    $country = country_for_customer($customer);
+    $customer['country_code'] = $country['code'];
+    $customer['country_flag'] = $country['flag'];
+    $customer['country_name'] = $country['name'];
+
+    return $customer;
+}
+
+/**
  * Creates a new customer with a freshly generated session_id.
  *
  * @param array<string, mixed> $data
@@ -116,6 +188,12 @@ function createCustomer(array $data): array
 {
     $sb        = Supabase::client();
     $sessionId = $data['session_id'] ?? generate_session_id();
+
+    // '' rather than null so the loop below stores it as null anyway; a
+    // label the browser made up must never reach the column.
+    if (array_key_exists('label', $data)) {
+        $data['label'] = normalizeCustomerLabel($data['label']) ?? '';
+    }
 
     $payload = ['session_id' => $sessionId];
     foreach (CUSTOMER_PROFILE_FIELDS as $field) {
@@ -135,6 +213,10 @@ function updateCustomer(string $sessionId, array $data): ?array
 {
     $sb      = Supabase::client();
     $payload = [];
+
+    if (array_key_exists('label', $data)) {
+        $data['label'] = normalizeCustomerLabel($data['label']) ?? '';
+    }
 
     foreach (CUSTOMER_PROFILE_FIELDS as $field) {
         if (array_key_exists($field, $data)) {
@@ -173,6 +255,7 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
         'session_id' => 'eq.' . $sessionId,
         'select'     => 'id,session_id,message,created_at,direction,wa_status,msg_type,'
                       . 'media_path,media_mime,media_size,media_name,ai_caption,'
+                      . 'wa_buttons,wa_template,wa_source,'
                       . 'latitude,longitude,place_name,place_address',
         'limit'      => (string) $limit,
     ];
@@ -223,6 +306,16 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
             'media_name'    => $row['media_name'] ?? null,
             'ai_caption'    => $row['ai_caption'] ?? null,
 
+            // The option labels of a quick-reply question, so the thread
+            // shows what the customer was actually offered rather than
+            // just the question text.
+            'buttons'       => decodeButtonLabels($row['wa_buttons'] ?? null),
+            'wa_template'   => $row['wa_template'] ?? null,
+
+            // 'app' for a reply typed on the phone and mirrored back by
+            // the coexistence echo webhook; null for one this CRM sent.
+            'wa_source'     => $row['wa_source'] ?? null,
+
             // Server-side only: the draft builder needs the file on disk
             // to attach a real image. api/messages.php strips this before
             // it reaches the browser -- a disk path must never leave here.
@@ -236,6 +329,38 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
     }
 
     return $messages;
+}
+
+/**
+ * Reads the stored quick-reply labels back into a list of strings.
+ *
+ * Stored as JSON in one column rather than a side table: they are three
+ * short strings that are only ever read together with their own row,
+ * and a join for that would be all cost and no benefit. A row written
+ * before the column existed, or one holding something unreadable, comes
+ * back as an empty list -- the question still renders, just without its
+ * options.
+ *
+ * @return array<int, string>
+ */
+function decodeButtonLabels(mixed $stored): array
+{
+    if (is_array($stored)) {
+        $decoded = $stored;
+    } elseif (is_string($stored) && $stored !== '') {
+        $decoded = json_decode($stored, true);
+    } else {
+        return [];
+    }
+
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    return array_values(array_map(
+        static fn(mixed $label): string => mb_substr((string) $label, 0, 40),
+        array_filter($decoded, static fn(mixed $label): bool => is_string($label) && trim($label) !== '')
+    ));
 }
 
 /**
@@ -336,11 +461,22 @@ function getOrCreateCustomerByWaId(string $waId, string $profileName = ''): arra
         'session_id' => waSessionId($waId),
         'wa_id'      => $waId,
         'phone'      => '+' . $waId,
+        // Nobody has spoken to this number before, which is the one
+        // moment the CRM can say that for certain. An agent can move
+        // them to 'old' later; guessing it back afterwards is impossible.
+        'label'      => 'new',
     ];
     // Only send a name we actually have -- merge-duplicates would
     // otherwise blank out a name the racing insert just stored.
     if ($profileName !== '') {
         $payload['wa_profile_name'] = $profileName;
+    }
+    // The country is in the number, so there is no reason to make an
+    // agent type it. Only ever written here, on the insert: a later
+    // correction by hand must not be overwritten by the prefix table.
+    $country = country_name_for_phone($waId);
+    if ($country !== null) {
+        $payload['country'] = $country;
     }
 
     $sb   = Supabase::client();
@@ -395,6 +531,7 @@ function insertWhatsAppMessage(string $sessionId, array $fields): ?array
 
     foreach ([
         'wa_message_id', 'wa_status', 'wa_error', 'wa_media_id',
+        'wa_buttons', 'wa_template', 'wa_source',
         'media_path', 'media_mime', 'media_size', 'media_name',
         'latitude', 'longitude', 'place_name', 'place_address',
     ] as $optional) {
@@ -464,6 +601,47 @@ function updateMessageStatus(string $waMessageId, string $status, string $error 
 }
 
 /**
+ * Rewrites the text of a message that was edited after it was sent.
+ *
+ * Reached only from the coexistence echo webhook: WhatsApp lets a
+ * business edit a message from the app for a few minutes after sending
+ * it, and a thread showing the version the customer no longer sees is
+ * worse than one showing nothing.
+ *
+ * Read-then-write rather than a single patch, because `message` is a
+ * jsonb object and PostgREST would replace the whole thing -- losing the
+ * LangChain `type` beside the content that everything reading this table
+ * still depends on.
+ */
+function setMessageContent(string $waMessageId, string $content): void
+{
+    if ($waMessageId === '' || $content === '') {
+        return;
+    }
+
+    $sb     = Supabase::client();
+    $result = $sb->get('n8n_chat_history', [
+        'wa_message_id' => 'eq.' . $waMessageId,
+        'select'        => 'id,message',
+        'limit'         => '1',
+    ]);
+
+    $row = $result['rows'][0] ?? null;
+    if ($row === null) {
+        error_log('[WhatsApp] an edit arrived for a message that is not in the thread: ' . $waMessageId);
+        return;
+    }
+
+    $message = is_string($row['message']) ? json_decode($row['message'], true) : $row['message'];
+    if (!is_array($message)) {
+        return;
+    }
+
+    $message['content'] = $content;
+    $sb->patch('n8n_chat_history', ['id' => 'eq.' . (int) $row['id']], ['message' => $message]);
+}
+
+/**
  * Records a media file that has been downloaded to disk.
  */
 function setMessageMedia(int $id, string $path, string $mime, int $size): void
@@ -503,7 +681,27 @@ them to edit and send.
 - If something needs a person — a custom quote, a complaint, a payment issue —
   say you are checking with the team rather than guessing.
 PROMPT,
+
+    // The catalog an agent can send in one click. Written by
+    // api/catalog.php, which stores the file itself; never by
+    // api/settings.php -- see SETTING_AGENT_EDITABLE below.
+    'catalog_path' => '',
+    'catalog_name' => '',
+    'catalog_mime' => '',
 ];
+
+/**
+ * The settings api/settings.php will WRITE.
+ *
+ * SETTING_DEFAULTS is still the whole set of keys that exist, and
+ * nothing outside it can be read or written -- but a key being editable
+ * from the settings form is a narrower thing. `catalog_path` is a
+ * location inside storage/, and an endpoint that took one from a JSON
+ * body would be handing the browser a way to name a file on disk. The
+ * catalog is uploaded through api/catalog.php instead, which stores the
+ * bytes and derives the path itself.
+ */
+const SETTING_AGENT_EDITABLE = ['ai_model', 'ai_system_prompt'];
 
 /**
  * Reads every editable setting, with defaults filled in.
@@ -571,6 +769,89 @@ function setSetting(string $key, string $value): void
 function setMessageCaption(int $id, string $caption): void
 {
     Supabase::client()->patch('n8n_chat_history', ['id' => 'eq.' . $id], ['ai_caption' => $caption]);
+}
+
+/**
+ * Points a customer at their profile photo on disk, or clears it.
+ *
+ * Deliberately not part of updateCustomer(): `avatar_path` is not in
+ * CUSTOMER_PROFILE_FIELDS, so the details form cannot reach it. Only
+ * api/avatar.php calls this, with a path it generated itself after
+ * validating the bytes.
+ */
+function setCustomerAvatar(string $sessionId, ?string $path): ?array
+{
+    $rows = Supabase::client()->patch(
+        'livar_customer',
+        ['session_id' => 'eq.' . $sessionId],
+        ['avatar_path' => $path]
+    );
+
+    return $rows[0] ?? null;
+}
+
+/**
+ * Whether any chat row still points at a file in the media store.
+ *
+ * The catalog is sent by reference -- a row records the path of the file
+ * that went out rather than a copy of it -- so replacing the catalog
+ * must not delete a file that a message in somebody's thread is still
+ * showing. Every other file in the store belongs to exactly one row, or
+ * to no row at all, so this is only asked about the catalog.
+ */
+function mediaPathInUse(string $path): bool
+{
+    if ($path === '') {
+        return false;
+    }
+
+    try {
+        $result = Supabase::client()->get('n8n_chat_history', [
+            'media_path' => 'eq.' . $path,
+            'select'     => 'id',
+            'limit'      => '1',
+        ]);
+    } catch (SupabaseException $e) {
+        // Could not tell. Keep the file: an orphan costs disk, a wrongly
+        // deleted one costs an attachment out of a customer's history.
+        error_log('[Supabase] could not check whether a media file is still referenced: ' . $e->getMessage());
+        return true;
+    }
+
+    return $result['rows'] !== [];
+}
+
+/**
+ * The catalog file staged on the settings page, if there is one.
+ *
+ * Returns null when none has been uploaded, or when the file it points
+ * at has since disappeared from disk -- a stale setting must read as
+ * "no catalog", not as a send that fails at the customer's end.
+ *
+ * @return array{abs: string, path: string, name: string, mime: string, size: int}|null
+ */
+function getCatalogFile(): ?array
+{
+    $settings = getSettings();
+    $path     = trim($settings['catalog_path'] ?? '');
+
+    if ($path === '') {
+        return null;
+    }
+
+    $abs = media_abs_path($path);
+    if ($abs === null) {
+        error_log('[Supabase] catalog_path points at a file that is not on disk: ' . $path);
+        return null;
+    }
+
+    return [
+        'abs'  => $abs,
+        'path' => $path,
+        'name' => ($settings['catalog_name'] ?? '') !== '' ? $settings['catalog_name'] : basename($abs),
+        'mime' => ($settings['catalog_mime'] ?? '') !== '' ? $settings['catalog_mime'] : 'application/pdf',
+        'size' => (int) filesize($abs),
+    ];
 }
 
 /**

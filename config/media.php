@@ -189,6 +189,89 @@ function media_abs_path(string $relative): ?string
 }
 
 /**
+ * Streams a stored file to the browser and stops.
+ *
+ * Lives here rather than in api/media.php because two endpoints serve
+ * bytes out of storage/ -- chat media and customer profile photos -- and
+ * the headers that make that safe must not be written twice and drift.
+ * nosniff matters more here than anywhere else in the app: these bytes
+ * came from a stranger's phone, and without it a browser could decide a
+ * "photo" is really HTML and run it on our origin.
+ *
+ * The caller has already re-checked the session and resolved the path
+ * through media_abs_path().
+ */
+function media_stream(string $abs, string $mime, string $name = ''): never
+{
+    $mime = media_normalize_mime($mime);
+    if ($mime === '' || media_ext_for_mime($mime) === null) {
+        $mime = 'application/octet-stream';
+    }
+
+    $size = (int) filesize($abs);
+    $etag = '"' . md5($abs . '|' . $size . '|' . (string) filemtime($abs)) . '"';
+
+    if (($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $etag) {
+        http_response_code(304);
+        header('ETag: ' . $etag);
+        exit;
+    }
+
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . $size);
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Security-Policy: default-src \'none\'; sandbox');
+    header('ETag: ' . $etag);
+    // The bytes behind a given URL never change -- a replaced avatar
+    // gets a new ?v= -- so this can cache hard. It is private: the
+    // response is only valid for this signed-in agent.
+    header('Cache-Control: private, max-age=31536000, immutable');
+    header('Content-Disposition: inline' . (($name !== '') ? '; filename="' . media_safe_filename($name) . '"' : ''));
+
+    // Stream rather than file_get_contents: a 16 MB video should not
+    // have to fit in PHP's memory limit.
+    $fh = fopen($abs, 'rb');
+    if ($fh === false) {
+        // Not json_error(): media.php is the storage layer and does not
+        // own the response format. The route above catches this.
+        throw new RuntimeException('That file could not be opened for reading.');
+    }
+    fpassthru($fh);
+    fclose($fh);
+    exit;
+}
+
+/**
+ * Makes a sender-supplied filename safe to put in a header.
+ *
+ * Only used for the download name -- it never touches the path on disk,
+ * which is always server-generated hex.
+ */
+function media_safe_filename(string $name): string
+{
+    $name = str_replace(["\r", "\n", '"', '\\'], '', $name);
+    $name = preg_replace('#[/\\\\]#', '_', $name) ?? '';
+    $name = trim($name);
+    return $name === '' ? 'file' : mb_substr($name, 0, 120);
+}
+
+/**
+ * Deletes a file from the media store, if it is really in there.
+ *
+ * Used when a profile photo or the catalog is replaced: the old file has
+ * no row pointing at it any more and would otherwise sit against the
+ * hosting quota forever. Resolved through media_abs_path() first, so a
+ * path that somehow escaped the root cannot be unlinked.
+ */
+function media_delete(string $relative): void
+{
+    $abs = media_abs_path($relative);
+    if ($abs !== null) {
+        @unlink($abs);
+    }
+}
+
+/**
  * Total bytes currently held in the media store.
  *
  * Media accumulates against the hosting quota and there is no pruning

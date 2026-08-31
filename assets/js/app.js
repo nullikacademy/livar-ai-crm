@@ -18,6 +18,15 @@
         draft: 'api/draft.php',
         send: 'api/send.php',
         upload: 'api/upload.php',
+        avatar: 'api/avatar.php',
+        catalog: 'api/catalog.php',
+        templates: 'api/templates.php',
+    };
+
+    /** How each customer label reads on screen. Mirrors CUSTOMER_LABELS. */
+    const LABELS = {
+        new: 'New',
+        old: 'Old',
     };
 
     /**
@@ -69,6 +78,12 @@
         closeDetailsBtn: document.getElementById('closeDetailsBtn'),
         detailsForm: document.getElementById('detailsForm'),
         saveDetailsBtn: document.getElementById('saveDetailsBtn'),
+        detailsAvatar: document.getElementById('detailsAvatar'),
+        avatarInput: document.getElementById('avatarInput'),
+        avatarPickBtn: document.getElementById('avatarPickBtn'),
+        avatarRemoveBtn: document.getElementById('avatarRemoveBtn'),
+        avatarHint: document.getElementById('avatarHint'),
+        countryDetected: document.getElementById('countryDetected'),
         // Misc
         toastStack: document.getElementById('toastStack'),
     };
@@ -92,6 +107,10 @@
         maxMessageId: 0,
         // A file staged by api/upload.php, waiting for Send.
         attachment: null,
+        // The catalog configured on the settings page, if any. Loaded
+        // once at boot: it is the same file for every conversation, and
+        // asking on every attach-menu open would be a request per tap.
+        catalog: null,
     };
 
     /** How often to look for new rows, in ms. */
@@ -134,6 +153,82 @@
         if (parts.length === 0) return '?';
         if (parts.length === 1) return parts[0].slice(0, 2);
         return (parts[0][0] + parts[1][0]);
+    }
+
+    /**
+     * Fills an .avatar element with the customer's photo, or initials.
+     *
+     * The URL goes in through img.src rather than into an HTML string:
+     * escapeHtml() does not escape quotes, so attribute interpolation is
+     * injectable. It is a same-origin api/avatar.php URL either way.
+     *
+     * A photo that 404s (the file went missing, or another agent removed
+     * it while this tab was open) falls back to the initials rather than
+     * leaving a broken-image icon in the list.
+     */
+    function paintAvatar(node, customer) {
+        if (!node) return;
+        node.textContent = '';
+        node.classList.remove('avatar--photo');
+
+        const url = customer?.avatar_url;
+        if (!url) {
+            node.textContent = initials(customer || {});
+            return;
+        }
+
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        img.addEventListener('error', () => {
+            node.classList.remove('avatar--photo');
+            node.textContent = initials(customer);
+        });
+        img.src = url;
+
+        node.classList.add('avatar--photo');
+        node.appendChild(img);
+    }
+
+    /** The label chip for a customer, or null when they have none. */
+    function buildLabelChip(customer) {
+        const label = customer?.label;
+        if (!label || !LABELS[label]) return null;
+
+        const chip = document.createElement('span');
+        chip.className = `label-chip label-chip--${label}`;
+        chip.textContent = LABELS[label];
+        chip.title = `${LABELS[label]} customer`;
+        return chip;
+    }
+
+    /**
+     * The flag emoji for a customer, or ''.
+     *
+     * Worked out server-side from the dialling prefix (see
+     * config/countries.php), so the browser only has to render it.
+     */
+    function countryFlag(customer) {
+        return customer?.country_flag || '';
+    }
+
+    /** Writes "🇪🇸 Marta Roig" into a node, flag first. */
+    function paintName(node, customer) {
+        if (!node) return;
+        node.textContent = '';
+
+        const flag = countryFlag(customer);
+        if (flag) {
+            const badge = document.createElement('span');
+            badge.className = 'flag';
+            badge.textContent = flag;
+            // Windows has no flag glyphs and renders the two letters, so
+            // the country name has to be reachable some other way.
+            badge.title = customer.country_name || '';
+            node.appendChild(badge);
+        }
+
+        node.appendChild(document.createTextNode(fullName(customer)));
     }
 
     function relativeTime(idOrDate) {
@@ -255,15 +350,25 @@
             : '';
 
         item.innerHTML = `
-            <span class="avatar">${escapeHtml(initials(customer))}</span>
+            <span class="avatar"></span>
             <span class="customer-item__body">
                 <span class="customer-item__top">
-                    <span class="customer-item__name">${escapeHtml(fullName(customer))}</span>
+                    <span class="customer-item__name"></span>
                     <span class="customer-item__time">${escapeHtml(relativeTime(customer.last_activity_at || customer.created_at))}</span>
                 </span>
                 <span class="customer-item__preview">${prefix}${preview}</span>
             </span>
         `;
+
+        // Everything below goes in through DOM properties rather than the
+        // template above. The avatar carries a URL and the flag carries a
+        // title, and escapeHtml() does not escape quotes — so neither can
+        // be interpolated into an attribute.
+        paintAvatar(item.querySelector('.avatar'), customer);
+        paintName(item.querySelector('.customer-item__name'), customer);
+
+        const chip = buildLabelChip(customer);
+        if (chip) item.querySelector('.customer-item__top').insertBefore(chip, item.querySelector('.customer-item__time'));
 
         item.addEventListener('click', () => selectCustomer(customer.session_id, { focusComposer: true }));
         return item;
@@ -374,8 +479,12 @@
     }
 
     function applyCustomerToHeader(customer) {
-        el.chatAvatar.textContent = initials(customer);
-        el.chatCustomerName.textContent = fullName(customer);
+        paintAvatar(el.chatAvatar, customer);
+        paintName(el.chatCustomerName, customer);
+
+        const chip = buildLabelChip(customer);
+        if (chip) el.chatCustomerName.appendChild(chip);
+
         el.chatCustomerPhone.textContent = customer.phone || customer.email || 'No phone on file';
         refreshWindowNotice();
     }
@@ -497,6 +606,15 @@
             case 'location':
                 buildLocationBody(bubble, msg);
                 break;
+            case 'buttons':
+                buildButtonsBody(bubble, msg);
+                break;
+            case 'template':
+                buildTemplateBody(bubble, msg);
+                break;
+            case 'reply':
+                buildReplyBody(bubble, msg);
+                break;
             case 'unsupported':
                 buildUnsupportedBody(bubble);
                 break;
@@ -505,6 +623,7 @@
         }
 
         if (isOurs) {
+            appendSourceTag(bubble, msg);
             appendStatus(bubble, msg);
             // Copy only makes sense for something with words in it.
             if (msg.content) appendCopyAction(bubble, msg.content);
@@ -530,6 +649,57 @@
         bubble.appendChild(text);
     }
 
+    /**
+     * A question we asked, with the options the customer was offered.
+     *
+     * The options are drawn as they look in WhatsApp — inert, because
+     * they are a record of what was sent, not controls. Showing the
+     * question without them would make the answer that comes back a
+     * non sequitur.
+     */
+    function buildButtonsBody(bubble, msg) {
+        bubble.classList.add('bubble--question');
+        buildTextBody(bubble, msg);
+
+        const options = Array.isArray(msg.buttons) ? msg.buttons : [];
+        if (options.length === 0) return;
+
+        const list = document.createElement('div');
+        list.className = 'bubble__options';
+        options.forEach((label) => {
+            const option = document.createElement('span');
+            option.className = 'bubble__option';
+            option.textContent = label;
+            list.appendChild(option);
+        });
+        bubble.appendChild(list);
+    }
+
+    /**
+     * A template send. The text is the template already filled in — what
+     * the customer actually received — and the tag says what it was
+     * built from, which is the bit an agent needs when the reply is
+     * confusing.
+     */
+    function buildTemplateBody(bubble, msg) {
+        const tag = document.createElement('div');
+        tag.className = 'bubble__tag';
+        tag.textContent = msg.wa_template ? `Template · ${msg.wa_template}` : 'Template';
+        bubble.appendChild(tag);
+
+        buildTextBody(bubble, msg);
+    }
+
+    /** The customer tapping one of the options we offered. */
+    function buildReplyBody(bubble, msg) {
+        const tag = document.createElement('div');
+        tag.className = 'bubble__tag';
+        tag.textContent = 'Tapped an answer';
+        bubble.appendChild(tag);
+
+        buildTextBody(bubble, msg);
+    }
+
     function buildImageBody(bubble, msg) {
         if (!msg.media_url) {
             buildMissingMediaBody(bubble, 'Photo');
@@ -541,6 +711,10 @@
         img.alt = msg.content || 'Photo';
         img.src = msg.media_url;
         img.addEventListener('click', () => openLightbox(msg.media_url, img.alt));
+        // Meta expires media after about 30 days and a download can fail
+        // outright, so the file behind a row is not guaranteed to be
+        // there. Say so, rather than leaving a broken-image icon.
+        img.addEventListener('error', () => replaceWithMissingMedia(bubble, img, 'Photo'));
         bubble.appendChild(img);
         appendCaption(bubble, msg.content);
     }
@@ -555,6 +729,7 @@
         video.controls = true;
         video.preload = 'metadata';
         video.src = msg.media_url;
+        video.addEventListener('error', () => replaceWithMissingMedia(bubble, video, 'Video'));
         bubble.appendChild(video);
         appendCaption(bubble, msg.content);
     }
@@ -651,6 +826,39 @@
         bubble.appendChild(note);
     }
 
+    /**
+     * Swaps a media element that failed to load for the same note.
+     *
+     * The row can carry a media_url whose bytes are gone — Meta expires
+     * media after about 30 days, and a download can simply have failed —
+     * and a broken-image icon tells an agent nothing about which of
+     * those happened or whether it is worth asking the customer again.
+     */
+    function replaceWithMissingMedia(bubble, node, label) {
+        node.remove();
+
+        // The caption, if there is one, stays: it is our own text and
+        // still describes what was sent. This fires from a load error,
+        // so it lands after the source tag was already prepended --
+        // hence going in after that tag rather than at the very top.
+        const note = missingMediaNote(label);
+        const tag = bubble.querySelector('.bubble__tag');
+        if (tag) {
+            tag.after(note);
+        } else {
+            bubble.prepend(note);
+        }
+
+        bubble.classList.remove('bubble--media');
+    }
+
+    function missingMediaNote(label) {
+        const note = document.createElement('div');
+        note.className = 'bubble__unsupported';
+        note.textContent = `${label} — no longer available.`;
+        return note;
+    }
+
     function appendCaption(bubble, caption) {
         if (!caption) return;
         const node = document.createElement('div');
@@ -659,12 +867,38 @@
         bubble.appendChild(node);
     }
 
+    /**
+     * Marks a reply that was typed on a phone rather than sent here.
+     *
+     * Only 'app' is labelled. A bubble with no tag is one this CRM sent,
+     * which is the common case and does not need saying — tagging both
+     * would be noise on every outbound message in every thread.
+     */
+    function appendSourceTag(bubble, msg) {
+        if (msg.wa_source !== 'app') return;
+
+        const tag = document.createElement('div');
+        tag.className = 'bubble__tag';
+        tag.textContent = 'Sent from the WhatsApp app';
+        // Above the text, like the template tag, so it reads as a label
+        // on the message rather than a footnote after it.
+        bubble.prepend(tag);
+    }
+
     function appendStatus(bubble, msg) {
         if (!msg.wa_status) return;
         const node = document.createElement('div');
         node.className = 'bubble__status';
 
-        if (msg.wa_status === 'failed') {
+        if (msg.wa_status === 'deleted') {
+            // Deleted for everyone from the phone. The row stays: a
+            // message that was in the thread and then withdrawn is a
+            // fact about the conversation, and hiding it makes whatever
+            // the customer said next unreadable.
+            bubble.classList.add('is-deleted');
+            node.classList.add('is-failed');
+            node.textContent = 'Deleted';
+        } else if (msg.wa_status === 'failed') {
             node.classList.add('is-failed');
             node.textContent = 'Not delivered';
         } else if (msg.wa_status === 'read') {
@@ -1056,25 +1290,53 @@
         menu.className = 'attach-menu';
         menu.id = 'attachMenu';
 
-        const fileItem = document.createElement('button');
-        fileItem.type = 'button';
-        fileItem.className = 'attach-menu__item';
-        fileItem.innerHTML = paperclipIconSvg() + '<span>Photo, video or file</span>';
-        fileItem.addEventListener('click', () => {
-            closeAttachMenu();
-            el.attachInput.click();
-        });
+        /** One row of the menu. `icon` is trusted markup from this file. */
+        function addItem(icon, label, onClick, { note = '', disabled = false } = {}) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'attach-menu__item';
+            item.disabled = disabled;
+            item.innerHTML = icon;
 
-        const locItem = document.createElement('button');
-        locItem.type = 'button';
-        locItem.className = 'attach-menu__item';
-        locItem.innerHTML = pinIconSvg() + '<span>Send location</span>';
-        locItem.addEventListener('click', () => {
-            closeAttachMenu();
-            openLocationDialog();
-        });
+            const text = document.createElement('span');
+            text.textContent = label;
+            item.appendChild(text);
 
-        menu.append(fileItem, locItem);
+            if (note) {
+                const hint = document.createElement('span');
+                hint.className = 'attach-menu__note';
+                hint.textContent = note;
+                item.appendChild(hint);
+            }
+
+            item.addEventListener('click', () => {
+                closeAttachMenu();
+                onClick();
+            });
+            menu.appendChild(item);
+            return item;
+        }
+
+        addItem(paperclipIconSvg(), 'Photo, video or file', () => el.attachInput.click());
+
+        // The catalog is one file for the whole business, uploaded on the
+        // settings page. Offered as its own row rather than left to the
+        // file picker so sending it is one tap and always the current
+        // version — the point of the feature.
+        const hasCatalog = state.catalog?.available === true;
+        addItem(
+            docIconSvg(),
+            'Send catalog',
+            () => (hasCatalog ? sendCatalog() : toast('Upload a catalog on the settings page first.', 'error')),
+            {
+                note: hasCatalog ? state.catalog.name : 'None uploaded yet',
+                disabled: !hasCatalog,
+            },
+        );
+
+        addItem(questionIconSvg(), 'Ask a question', openQuestionDialog);
+        addItem(pinIconSvg(), 'Send location', openLocationDialog);
+
         document.body.appendChild(menu);
 
         // Anchored above the button, clamped to the viewport.
@@ -1149,6 +1411,399 @@
             toast(err.message, 'error');
         } finally {
             syncSendButton();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Catalog
+    // ------------------------------------------------------------------
+
+    /** Reads what is uploaded, so the attach menu can name it. */
+    async function loadCatalog() {
+        try {
+            const data = await api(API.catalog);
+            state.catalog = data.catalog;
+        } catch {
+            // Not worth a toast on page load. The menu row simply says
+            // there is none, which is also what an agent should do about it.
+            state.catalog = null;
+        }
+    }
+
+    /**
+     * Sends the configured catalog in one call.
+     *
+     * Nothing about WHICH file is sent comes from here — api/send.php
+     * reads the setting itself — so this cannot be used to send some
+     * other file off the server.
+     */
+    async function sendCatalog() {
+        if (state.isSending || !state.selectedSessionId) return;
+        if (!isWindowOpen()) {
+            toast('The 24-hour reply window has closed.', 'error');
+            return;
+        }
+
+        const sessionId = state.selectedSessionId;
+        const caption = el.composerInput.value.trim();
+
+        state.isSending = true;
+        syncSendButton();
+
+        try {
+            const data = await api(API.send, {
+                method: 'POST',
+                body: JSON.stringify({ session_id: sessionId, type: 'catalog', text: caption }),
+            });
+
+            if (caption) {
+                el.composerInput.value = '';
+                autoGrowComposer();
+            }
+            appendMessages([data.message]);
+            refreshSidebarPreview(sessionId);
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            state.isSending = false;
+            syncSendButton();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Ask a question
+    //
+    // An answer the customer taps is an answer the CRM can read. A typed
+    // "yeah the small one I think" is a sentence somebody has to
+    // interpret, and half the time it arrives three hours later.
+    // ------------------------------------------------------------------
+
+    /** WhatsApp's own limits on an interactive button message. */
+    const MAX_BUTTONS = 3;
+    const MAX_BUTTON_LABEL = 20;
+
+    function openQuestionDialog() {
+        if (!state.selectedSessionId) {
+            toast('Select a customer first.', 'error');
+            return;
+        }
+        if (!isWindowOpen()) {
+            toast('The 24-hour reply window has closed.', 'error');
+            return;
+        }
+
+        const overlay = document.createElement('div');
+        overlay.className = 'location-dialog';
+        overlay.id = 'questionDialog';
+        overlay.innerHTML = `
+            <form class="location-dialog__card" id="questionForm">
+                <h3>Ask a question</h3>
+                <p class="dialog__note">
+                    The customer answers by tapping. Their choice comes back into this
+                    conversation as a normal message.
+                </p>
+                <div class="field">
+                    <label for="qBody">Question</label>
+                    <textarea id="qBody" rows="3" maxlength="1024" placeholder="Which size would you like?" required></textarea>
+                </div>
+                <div class="field">
+                    <label>Answers</label>
+                    <div class="question-options" id="qOptions"></div>
+                    <p class="field__help">
+                        Up to ${MAX_BUTTONS}, ${MAX_BUTTON_LABEL} characters each — WhatsApp's limit, not ours.
+                    </p>
+                </div>
+                <div class="location-dialog__actions">
+                    <button type="button" class="btn btn--ghost" id="qCancel">Cancel</button>
+                    <button type="submit" class="btn btn--primary" id="qSend">Send question</button>
+                </div>
+            </form>
+        `;
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) closeQuestionDialog();
+        });
+        document.body.appendChild(overlay);
+
+        const options = document.getElementById('qOptions');
+        for (let i = 0; i < MAX_BUTTONS; i += 1) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.maxLength = MAX_BUTTON_LABEL;
+            input.className = 'question-options__input';
+            input.placeholder = i === 0 ? 'Yes' : (i === 1 ? 'No' : 'Optional');
+            options.appendChild(input);
+        }
+
+        // Anything already typed in the composer is almost certainly the
+        // question, so start from it rather than making them retype it.
+        document.getElementById('qBody').value = el.composerInput.value.trim();
+
+        document.getElementById('qCancel').addEventListener('click', closeQuestionDialog);
+        document.getElementById('questionForm').addEventListener('submit', submitQuestion);
+        document.getElementById('qBody').focus();
+    }
+
+    function closeQuestionDialog() {
+        document.getElementById('questionDialog')?.remove();
+    }
+
+    async function submitQuestion(e) {
+        e.preventDefault();
+
+        const body = document.getElementById('qBody').value.trim();
+        const buttons = [...document.querySelectorAll('.question-options__input')]
+            .map((input) => input.value.trim())
+            .filter(Boolean);
+
+        if (!body) {
+            toast('Write the question first.', 'error');
+            return;
+        }
+        if (buttons.length === 0) {
+            toast('Add at least one answer button.', 'error');
+            return;
+        }
+
+        const sessionId = state.selectedSessionId;
+        const btn = document.getElementById('qSend');
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+
+        try {
+            const data = await api(API.send, {
+                method: 'POST',
+                body: JSON.stringify({ session_id: sessionId, type: 'buttons', text: body, buttons }),
+            });
+
+            closeQuestionDialog();
+            // The composer seeded this, so clear whatever it still holds.
+            el.composerInput.value = '';
+            autoGrowComposer();
+            syncSendButton();
+
+            appendMessages([data.message]);
+            refreshSidebarPreview(sessionId);
+        } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Send question';
+            toast(err.message, 'error');
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Templates
+    //
+    // The only thing WhatsApp still delivers once the 24-hour window has
+    // closed. Without this a conversation that goes quiet overnight can
+    // never be restarted from the CRM.
+    // ------------------------------------------------------------------
+
+    async function openTemplateDialog() {
+        if (!state.selectedSessionId) {
+            toast('Select a customer first.', 'error');
+            return;
+        }
+
+        const overlay = document.createElement('div');
+        overlay.className = 'location-dialog';
+        overlay.id = 'templateDialog';
+        overlay.innerHTML = `
+            <form class="location-dialog__card location-dialog__card--wide" id="templateForm">
+                <h3>Send a template</h3>
+                <p class="dialog__note">
+                    Approved in advance with Meta, which is why WhatsApp still carries it
+                    outside the 24-hour window. Sending one reopens the window.
+                </p>
+                <div class="field">
+                    <label for="tplPick">Template</label>
+                    <select id="tplPick" required>
+                        <option value="">Loading…</option>
+                    </select>
+                </div>
+                <div id="tplParams"></div>
+                <div class="template-preview" id="tplPreview" hidden></div>
+                <div class="location-dialog__actions">
+                    <button type="button" class="btn btn--ghost" id="tplCancel">Cancel</button>
+                    <button type="submit" class="btn btn--primary" id="tplSend" disabled>Send template</button>
+                </div>
+            </form>
+        `;
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) closeTemplateDialog();
+        });
+        document.body.appendChild(overlay);
+        document.getElementById('tplCancel').addEventListener('click', closeTemplateDialog);
+        document.getElementById('templateForm').addEventListener('submit', submitTemplate);
+
+        const picker = document.getElementById('tplPick');
+
+        let templates = [];
+        try {
+            const data = await api(API.templates);
+            templates = data.templates || [];
+        } catch (err) {
+            picker.innerHTML = '';
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'Could not load templates';
+            picker.appendChild(option);
+            toast(err.message, 'error');
+            return;
+        }
+
+        // The dialog may have been dismissed while the request was out.
+        if (!document.getElementById('templateDialog')) return;
+
+        picker.innerHTML = '';
+        if (templates.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'This number has no templates yet';
+            picker.appendChild(option);
+            return;
+        }
+
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Choose a template…';
+        picker.appendChild(placeholder);
+
+        templates.forEach((template, index) => {
+            const option = document.createElement('option');
+            option.value = String(index);
+            option.dataset.name = template.name;
+            option.dataset.language = template.language;
+            // A template that cannot be sent is still listed, greyed out
+            // and saying why: "it isn't in the list" is a far worse
+            // answer than "it is still pending approval".
+            option.textContent = template.sendable
+                ? `${template.name} (${template.language})`
+                : `${template.name} — ${template.reason}`;
+            option.disabled = !template.sendable;
+            picker.appendChild(option);
+        });
+
+        picker.addEventListener('change', () => {
+            const template = templates[Number(picker.value)];
+            renderTemplateParams(template);
+        });
+    }
+
+    /** Draws one input per {{n}} the chosen template has, plus a preview. */
+    function renderTemplateParams(template) {
+        const holder = document.getElementById('tplParams');
+        const preview = document.getElementById('tplPreview');
+        const send = document.getElementById('tplSend');
+        holder.innerHTML = '';
+
+        if (!template) {
+            preview.hidden = true;
+            send.disabled = true;
+            return;
+        }
+
+        for (let i = 1; i <= template.placeholders; i += 1) {
+            const field = document.createElement('div');
+            field.className = 'field';
+
+            const label = document.createElement('label');
+            label.textContent = `Value {{${i}}}`;
+            label.setAttribute('for', `tplParam${i}`);
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.id = `tplParam${i}`;
+            input.className = 'template-param';
+            input.required = true;
+            input.addEventListener('input', () => paintTemplatePreview(template));
+
+            field.append(label, input);
+            holder.appendChild(field);
+        }
+
+        send.disabled = false;
+        paintTemplatePreview(template);
+    }
+
+    /** Shows the template with the typed values filled in. */
+    function paintTemplatePreview(template) {
+        const preview = document.getElementById('tplPreview');
+        preview.hidden = false;
+        preview.textContent = renderTemplateBody(template, currentTemplateParams());
+    }
+
+    function currentTemplateParams() {
+        return [...document.querySelectorAll('.template-param')].map((input) => input.value.trim());
+    }
+
+    /**
+     * Substitutes values into a template body.
+     *
+     * Mirrors renderTemplateBody() in api/send.php, which is what
+     * actually gets stored — this one only has to make the preview
+     * honest about what will arrive.
+     */
+    function renderTemplateBody(template, params) {
+        let body = template.body || '';
+        params.forEach((value, index) => {
+            const token = new RegExp(`\\{\\{\\s*${index + 1}\\s*\\}\\}`, 'g');
+            body = body.replace(token, value || `{{${index + 1}}}`);
+        });
+        return [template.header, body, template.footer].filter(Boolean).join('\n\n');
+    }
+
+    function closeTemplateDialog() {
+        document.getElementById('templateDialog')?.remove();
+    }
+
+    async function submitTemplate(e) {
+        e.preventDefault();
+
+        const picker = document.getElementById('tplPick');
+        if (picker.value === '') {
+            toast('Choose a template first.', 'error');
+            return;
+        }
+
+        const preview = document.getElementById('tplPreview');
+        const params = currentTemplateParams();
+        if (params.some((value) => value === '')) {
+            toast('Fill in every value the template asks for.', 'error');
+            return;
+        }
+
+        const option = picker.options[picker.selectedIndex];
+        const sessionId = state.selectedSessionId;
+        const btn = document.getElementById('tplSend');
+
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+
+        try {
+            const data = await api(API.send, {
+                method: 'POST',
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    type: 'template',
+                    template: option.dataset.name,
+                    language: option.dataset.language,
+                    // Sent so the stored row reads as what the customer
+                    // received rather than as "{{1}}".
+                    body: preview.textContent,
+                    params,
+                }),
+            });
+
+            closeTemplateDialog();
+            appendMessages([data.message]);
+            refreshSidebarPreview(sessionId);
+            toast('Template sent.');
+        } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Send template';
+            toast(err.message, 'error');
         }
     }
 
@@ -1243,6 +1898,10 @@
         }
     }
 
+    function questionIconSvg() {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><path d="M12 17h.01"/></svg>';
+    }
+
     function paperclipIconSvg() {
         return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
     }
@@ -1307,12 +1966,23 @@
             el.windowNotice.innerHTML = '';
             const strong = document.createElement('strong');
             strong.textContent = 'The 24-hour reply window has closed. ';
+
+            // The notice used to end here, at a dead end. An approved
+            // template is the one thing WhatsApp still carries, so the
+            // way out of the dead end belongs in the notice itself.
+            const action = document.createElement('button');
+            action.type = 'button';
+            action.className = 'btn btn--primary btn--sm window-notice__action';
+            action.textContent = 'Send a template';
+            action.addEventListener('click', openTemplateDialog);
+
             el.windowNotice.append(
                 strong,
                 document.createTextNode(
                     'WhatsApp only allows a free-form reply within a day of the customer\'s last '
-                    + 'message. Sending now needs an approved template, which this CRM does not do.'
+                    + 'message. Sending now needs a template that Meta approved in advance.'
                 ),
+                action,
             );
         } else {
             const hours = Math.floor(left / 3600);
@@ -1506,7 +2176,7 @@
 
     const FORM_FIELDS = [
         'first_name', 'last_name', 'username', 'phone',
-        'country', 'email', 'city', 'address', 'tax_id', 'details',
+        'country', 'email', 'city', 'address', 'tax_id', 'details', 'label',
     ];
 
     function openDetailsPanel() {
@@ -1517,6 +2187,9 @@
         });
         document.getElementById('field_session_id').value = state.selectedCustomer.session_id;
         document.getElementById('field_session_id_display').textContent = state.selectedCustomer.session_id;
+
+        paintDetailsPhoto();
+        paintDetectedCountry();
 
         // Only meaningful for a real WhatsApp contact.
         const waName = state.selectedCustomer.wa_profile_name || '';
@@ -1534,6 +2207,129 @@
         el.detailsPanel.classList.remove('is-open');
         el.detailsPanel.setAttribute('aria-hidden', 'true');
         setTimeout(() => { el.panelOverlay.hidden = true; }, 220);
+    }
+
+    // ------------------------------------------------------------------
+    // Profile photo
+    //
+    // WhatsApp does not hand out a contact's own picture, so this is one
+    // an agent sets. With none, the avatar falls back to initials
+    // everywhere, exactly as it did before.
+    // ------------------------------------------------------------------
+
+    function paintDetailsPhoto() {
+        paintAvatar(el.detailsAvatar, state.selectedCustomer);
+        el.avatarRemoveBtn.hidden = !state.selectedCustomer?.avatar_url;
+        el.avatarPickBtn.textContent = state.selectedCustomer?.avatar_url ? 'Change photo' : 'Add photo';
+    }
+
+    el.avatarPickBtn.addEventListener('click', () => el.avatarInput.click());
+
+    el.avatarInput.addEventListener('change', async () => {
+        const file = el.avatarInput.files?.[0];
+        // Reset immediately so picking the same file twice still fires.
+        el.avatarInput.value = '';
+        if (!file || !state.selectedCustomer) return;
+
+        const body = new FormData();
+        body.append('file', file);
+        body.append('session_id', state.selectedCustomer.session_id);
+
+        setAvatarBusy(true, 'Uploading…');
+
+        try {
+            // Not through api(): that forces application/json, and the
+            // browser has to set the multipart boundary itself.
+            const res = await fetch(API.avatar, { method: 'POST', body });
+            const data = await res.json();
+            if (!res.ok || data.success === false) {
+                throw new Error(data.error || 'That photo could not be saved.');
+            }
+            applySavedCustomer(data.customer);
+            toast('Profile photo updated.');
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            setAvatarBusy(false);
+        }
+    });
+
+    el.avatarRemoveBtn.addEventListener('click', async () => {
+        if (!state.selectedCustomer) return;
+
+        setAvatarBusy(true, 'Removing…');
+
+        try {
+            const params = new URLSearchParams({ session_id: state.selectedCustomer.session_id });
+            const data = await api(`${API.avatar}?${params.toString()}`, { method: 'DELETE' });
+            applySavedCustomer(data.customer);
+            toast('Profile photo removed.');
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            setAvatarBusy(false);
+        }
+    });
+
+    function setAvatarBusy(busy, note = '') {
+        el.avatarPickBtn.disabled = busy;
+        el.avatarRemoveBtn.disabled = busy;
+        el.avatarHint.textContent = busy ? note : 'JPEG, PNG, WebP or GIF, up to 5 MB.';
+    }
+
+    /** Applies a saved customer everywhere it is on screen. */
+    function applySavedCustomer(customer) {
+        if (!customer) return;
+        state.selectedCustomer = customer;
+        applyCustomerToHeader(customer);
+        updateCustomerItemInList(customer);
+        paintDetailsPhoto();
+        paintDetectedCountry();
+    }
+
+    /**
+     * Says what country the number points at, beside the country field.
+     *
+     * Only ever a note. The field stays editable and always wins: a
+     * number can be a roaming SIM or a virtual line, and a prefix table
+     * must not overwrite what an agent actually knows.
+     */
+    function paintDetectedCountry() {
+        const customer = state.selectedCustomer;
+        const name = customer?.country_name;
+
+        if (!name) {
+            el.countryDetected.hidden = true;
+            return;
+        }
+
+        el.countryDetected.hidden = false;
+        el.countryDetected.textContent = '';
+
+        const flag = countryFlag(customer);
+        if (flag) {
+            const node = document.createElement('span');
+            node.className = 'flag';
+            node.textContent = flag;
+            el.countryDetected.appendChild(node);
+        }
+        el.countryDetected.appendChild(
+            document.createTextNode(`From the number: ${name}`),
+        );
+
+        const field = document.getElementById('field_country');
+        if (field.value.trim() === '') {
+            const use = document.createElement('button');
+            use.type = 'button';
+            use.className = 'btn-link';
+            use.textContent = 'Use';
+            use.addEventListener('click', () => {
+                field.value = name;
+                paintDetectedCountry();
+                field.focus();
+            });
+            el.countryDetected.appendChild(use);
+        }
     }
 
     // Copies the WhatsApp name into the editable fields, so an agent can
@@ -1573,9 +2369,7 @@
                 body: JSON.stringify(payload),
             });
 
-            state.selectedCustomer = data.customer;
-            applyCustomerToHeader(data.customer);
-            updateCustomerItemInList(data.customer);
+            applySavedCustomer(data.customer);
 
             toast('Customer details saved.');
             closeDetailsPanel();
@@ -1597,6 +2391,10 @@
         if (e.key === 'Escape') {
             if (document.getElementById('locationDialog')) {
                 closeLocationDialog();
+            } else if (document.getElementById('questionDialog')) {
+                closeQuestionDialog();
+            } else if (document.getElementById('templateDialog')) {
+                closeTemplateDialog();
             } else if (document.getElementById('attachMenu')) {
                 closeAttachMenu();
             } else if (document.getElementById('lightbox')) {
@@ -1690,5 +2488,6 @@
 
     syncSendButton();
     loadCustomers({ reset: true });
+    loadCatalog();
     startPolling();
 })();

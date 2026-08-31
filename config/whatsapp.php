@@ -141,6 +141,152 @@ final class WhatsApp
     }
 
     /**
+     * Sends an approved message template.
+     *
+     * This is the ONLY thing WhatsApp will deliver once the 24-hour
+     * free-form window has closed, which is the whole reason it exists
+     * here: without it a conversation that goes quiet overnight can
+     * never be restarted from the CRM.
+     *
+     * $bodyParams fills the template's {{1}}, {{2}}, ... placeholders in
+     * order. A template with none takes an empty array and sends no
+     * components at all -- Meta rejects an empty parameters list.
+     *
+     * @param array<int, string> $bodyParams
+     * @return array<string, mixed>
+     */
+    public function sendTemplate(string $to, string $name, string $language, array $bodyParams = []): array
+    {
+        if ($name === '' || $language === '') {
+            throw new WhatsAppException('A template needs a name and a language.', 422);
+        }
+
+        $template = [
+            'name'     => $name,
+            'language' => ['code' => $language],
+        ];
+
+        if ($bodyParams) {
+            $template['components'] = [[
+                'type'       => 'body',
+                'parameters' => array_map(
+                    static fn(string $value): array => ['type' => 'text', 'text' => $value],
+                    array_values($bodyParams)
+                ),
+            ]];
+        }
+
+        return $this->send([
+            'to'       => self::normalizeTo($to),
+            'type'     => 'template',
+            'template' => $template,
+        ]);
+    }
+
+    /**
+     * Sends a question with tappable reply buttons.
+     *
+     * The customer answers by tapping, and the tap comes back on the
+     * webhook as an `interactive` message carrying the button's id and
+     * title -- so this is how the CRM asks a question it can actually
+     * read the answer to, instead of hoping for a parseable sentence.
+     *
+     * WhatsApp's own limits are enforced here rather than trusted to the
+     * provider: at most three buttons, 20 characters each, and no
+     * duplicate ids.
+     *
+     * @param array<int, string> $buttons the option labels, in order
+     * @return array<string, mixed>
+     */
+    public function sendButtons(string $to, string $body, array $buttons, string $footer = ''): array
+    {
+        $buttons = array_values(array_filter(array_map('trim', $buttons), static fn(string $b): bool => $b !== ''));
+
+        if ($body === '') {
+            throw new WhatsAppException('A question needs something to ask.', 422);
+        }
+        if (count($buttons) < 1 || count($buttons) > self::MAX_REPLY_BUTTONS) {
+            throw new WhatsAppException(
+                'A question needs between 1 and ' . self::MAX_REPLY_BUTTONS . ' answer buttons.',
+                422
+            );
+        }
+
+        $replies = [];
+        foreach ($buttons as $index => $label) {
+            if (mb_strlen($label) > self::MAX_BUTTON_LABEL) {
+                throw new WhatsAppException(
+                    'WhatsApp allows ' . self::MAX_BUTTON_LABEL . ' characters on a button; "'
+                    . $label . '" is longer.',
+                    422
+                );
+            }
+            $replies[] = [
+                'type'  => 'reply',
+                // The id is ours, not the label: two buttons could
+                // legitimately read the same in different languages, and
+                // WhatsApp requires the ids to be distinct.
+                'reply' => ['id' => 'opt_' . $index, 'title' => $label],
+            ];
+        }
+
+        $interactive = [
+            'type'   => 'button',
+            'body'   => ['text' => mb_substr($body, 0, 1024)],
+            'action' => ['buttons' => $replies],
+        ];
+        if ($footer !== '') {
+            $interactive['footer'] = ['text' => mb_substr($footer, 0, 60)];
+        }
+
+        return $this->send([
+            'to'          => self::normalizeTo($to),
+            'type'        => 'interactive',
+            'interactive' => $interactive,
+        ]);
+    }
+
+    /** WhatsApp's ceiling on reply buttons in one interactive message. */
+    public const MAX_REPLY_BUTTONS = 3;
+
+    /** WhatsApp's ceiling on a reply button's label. */
+    public const MAX_BUTTON_LABEL = 20;
+
+    /**
+     * Lists the message templates registered on this WhatsApp number.
+     *
+     * Only APPROVED ones are any use -- sending a rejected or pending
+     * template just fails at Meta -- but everything is returned with its
+     * status so the settings/templates UI can say why a template it can
+     * see is not offered.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listTemplates(): array
+    {
+        [$body, $status, ] = $this->rawGetQuiet($this->baseUrl . '/v1/configs/templates');
+
+        if ($status >= 400 || $status === 0) {
+            error_log("[WhatsApp] GET /v1/configs/templates -> HTTP {$status}: " . mb_substr($body, 0, 400));
+            throw new WhatsAppException(
+                self::providerMessage($body, 'WhatsApp would not list your message templates.'),
+                $status >= 400 ? $status : 502
+            );
+        }
+
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            throw new WhatsAppException('WhatsApp returned an unreadable template list.', 502);
+        }
+
+        // 360dialog answers with waba_templates; Meta's own Cloud API
+        // uses data. Accept either rather than depend on which proxy
+        // version an account is on.
+        $rows = $decoded['waba_templates'] ?? $decoded['data'] ?? $decoded;
+        return is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [];
+    }
+
+    /**
      * Pulls the provider's message id out of a send response, which is
      * what gets stored so statuses[] webhooks can find the row again.
      *

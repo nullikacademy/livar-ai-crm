@@ -130,12 +130,26 @@ function buildTurns(array $messages): array
             'document' => '[sent a document' . ($msg['media_name'] ? ': ' . $msg['media_name'] : '') . ']',
             'location' => '[shared a location' . ($msg['place_name'] ? ': ' . $msg['place_name'] : '') . ']',
             'sticker'  => '[sent a sticker]',
+            // A question with tappable options, and the tap that answered
+            // it. Both read as ordinary text without this, which loses
+            // the one fact that matters: the customer chose from a list
+            // rather than saying something of their own.
+            'buttons'  => '[asked, with the options ' . optionList($msg) . ']',
+            'reply'    => '[tapped an answer]',
             default    => '',
         };
 
         if ($label !== '') {
-            // A location's content IS its place name, already in the label.
-            $content = ($content !== '' && !str_contains($label, $content))
+            // A location's content IS its place name, which the label
+            // already carries. Every other type's content is separate
+            // from its label -- a document's caption, a question's text,
+            // the answer that was tapped -- so the check is scoped to
+            // location rather than applied to all of them, where a
+            // one-word answer that happened to appear inside the marker
+            // would silently vanish.
+            $duplicated = $type === 'location' && $content !== '' && str_contains($label, $content);
+
+            $content = ($content !== '' && !$duplicated)
                 ? $label . ' ' . $content
                 : $label;
         }
@@ -148,6 +162,17 @@ function buildTurns(array $messages): array
     }
 
     return $turns;
+}
+
+/**
+ * The options a quick-reply question offered, as "Yes / No / Later".
+ *
+ * @param array<string, mixed> $msg
+ */
+function optionList(array $msg): string
+{
+    $options = is_array($msg['buttons'] ?? null) ? $msg['buttons'] : [];
+    return $options ? implode(' / ', $options) : 'none recorded';
 }
 
 /**

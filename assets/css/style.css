@@ -1068,7 +1068,8 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     color: var(--ink-2);
 }
 .field input,
-.field textarea {
+.field textarea,
+.field select {
     width: 100%;
     border: 1px solid var(--line);
     background: var(--surface-2);
@@ -1078,8 +1079,12 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     resize: vertical;
     transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
+/* The label picker. Left with the platform's own arrow rather than a
+   drawn one: a native select is the control a phone renders best. */
+.field select { resize: none; color: var(--ink); }
 .field input:focus,
-.field textarea:focus {
+.field textarea:focus,
+.field select:focus {
     outline: none;
     background: var(--surface);
     border-color: var(--accent);
@@ -1480,6 +1485,174 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 @keyframes healthPulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.45; }
+}
+
+/* --------------------------------------------------------------------------
+   Catalog (settings page)
+   -------------------------------------------------------------------------- */
+
+.catalog {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface);
+}
+.catalog__info {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+}
+.catalog__info--empty { font-weight: 400; font-size: 12.5px; color: var(--ink-3); }
+.catalog__actions { display: flex; align-items: center; gap: 12px; }
+/* Same reason as the photo button: a ghost button on white reads as a
+   label until it is hovered. */
+.catalog .btn--ghost { border: 1px solid var(--line-strong); }
+
+/* --------------------------------------------------------------------------
+   Profile photo, labels and country flags
+   -------------------------------------------------------------------------- */
+
+/* A photo fills the same circle the initials used, so nothing around it
+   has to move when one is added. */
+.avatar--photo { background: var(--surface-3); padding: 0; overflow: hidden; }
+.avatar--photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.avatar--xl { width: 72px; height: 72px; font-size: 24px; }
+
+.details-photo {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-bottom: 4px;
+}
+.details-photo__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.details-photo__hint { flex-basis: 100%; margin: 0; font-size: 11.5px; color: var(--ink-3); }
+/* A ghost button on the panel's white ground reads as a label until it
+   is hovered, so this one gets an outline to look like a control. */
+.details-photo .btn--ghost { border: 1px solid var(--line-strong); }
+
+.btn--sm { height: 32px; padding: 0 12px; font-size: 13px; }
+.btn-link--danger { color: #B42318; }
+.btn-link--danger:hover { color: #912018; }
+
+/* Flag emoji sit beside a name, so they get the spacing of a word and
+   never the line-height of one -- a taller glyph must not push a list
+   row out of alignment with its neighbours. */
+.flag {
+    margin-right: 5px;
+    font-size: 1.05em;
+    line-height: 1;
+    vertical-align: -0.05em;
+}
+
+.field__help--inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 5px;
+}
+
+/* New / old customer. Small, low-contrast and never louder than the
+   name it sits beside: it is a hint for scanning a list, not a status. */
+.label-chip {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: var(--r-full);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.label-chip--new { color: #067647; background: #ECFDF3; border: 1px solid #ABEFC6; }
+.label-chip--old { color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--line-strong); }
+
+/* The row is space-between, so without the auto margin a third child
+   would drift into the middle instead of sitting against the name. */
+.customer-item__top .label-chip { margin-left: 4px; margin-right: auto; }
+.chat__customer-name .label-chip { margin-left: 7px; vertical-align: 1px; }
+
+/* --------------------------------------------------------------------------
+   Questions, answers and templates
+   -------------------------------------------------------------------------- */
+
+/* The options a question offered. Inert on purpose: this is a record of
+   what was sent, not a control -- only the customer's phone can act on
+   them. */
+.bubble__options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 12px 10px;
+}
+.bubble__option {
+    padding: 4px 10px;
+    border-radius: var(--r-full);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+}
+.bubble--customer .bubble__option { color: var(--ink-2); border-color: var(--line-strong); }
+
+/* "Template · order_update", "Tapped an answer". Deliberately quiet: a
+   run of tapped answers is common, and three shouting labels down one
+   side of a thread would out-weigh the answers themselves. */
+.bubble__tag {
+    padding: 8px 12px 0;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.62;
+}
+.bubble--customer .bubble__tag { color: var(--ink-3); opacity: 1; }
+
+/* Deleted for everyone from the phone. Struck through rather than
+   removed: what was said and then withdrawn is part of the thread, and
+   dropping it leaves the customer's next message answering nothing. */
+.bubble.is-deleted .bubble__text,
+.bubble.is-deleted .bubble__caption {
+    text-decoration: line-through;
+    opacity: 0.6;
+}
+
+.window-notice__action { margin-top: 8px; display: block; }
+
+.dialog__note { margin: -4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-3); }
+
+.location-dialog__card--wide { max-width: 460px; max-height: 86vh; overflow-y: auto; }
+
+.question-options { display: flex; flex-direction: column; gap: 6px; }
+
+.template-preview {
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    font-size: 13.5px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--ink-2);
+}
+
+.attach-menu__item:disabled { opacity: 0.55; }
+.attach-menu__note {
+    margin-left: auto;
+    padding-left: 10px;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ink-3);
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 @media (min-width: 900px) {

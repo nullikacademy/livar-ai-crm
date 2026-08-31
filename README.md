@@ -43,9 +43,13 @@ HTTP URL, and the login cookie is only marked `secure` over TLS.
 ### Step 2 — Run the database schema
 
 In the **Supabase SQL editor**, run the contents of `sql/schema.sql`. It's
-safe to re-run. This creates:
+safe to re-run — and re-running it is exactly what an existing install
+needs after an upgrade, since every column it adds is guarded. This
+creates:
 - `livar_customer` and `n8n_chat_history` (if they don't already exist)
 - the WhatsApp columns on both, all nullable, so existing rows are fine
+- `avatar_path` and `label` on the customer, and `wa_buttons` /
+  `wa_template` on the chat history
 - the unique indexes on `wa_id` and `wa_message_id` that make first
   contact race-free and webhook retries harmless
 - the `get_customers_with_preview()` function, which the app calls to fetch
@@ -152,6 +156,36 @@ To check it works, send a WhatsApp message to your business number. A
 customer should appear in the sidebar within a few seconds. If not, check
 your PHP error log for lines starting with `[WhatsApp]`.
 
+## 2b. Updating an existing install
+
+Two steps, in this order. Your `config/config.php` is gitignored, so a
+pull never touches it.
+
+```bash
+cd /path/to/your/crm          # on cPanel: public_html, or the subdomain folder
+git pull origin main
+```
+
+Then **re-run `sql/schema.sql` in the Supabase SQL editor**. It is
+written to be safe to re-run — every table, column, index and function in
+it is guarded — and re-running is exactly how an existing database picks
+up the columns a new version added. Skipping it is the usual cause of a
+`column ... does not exist` error right after an update.
+
+If you deploy by uploading a zip rather than with git, keep a copy of
+`config/config.php` first and put it back afterwards, then re-run the
+schema the same way.
+
+**Check it landed:** open the settings page (gear icon) and look at the
+footer. It shows the version and the commit git actually has checked out,
+which is the one thing that can tell you whether the pull worked without
+opening a shell. If the version there hasn't moved, the new code is not
+running.
+
+Nothing else is needed — there is no build step, no dependency install
+and no service to restart. `asset()` cache-busts the CSS and JS on
+`filemtime`, so browsers pick up the new frontend on the next load.
+
 ### If something doesn't work
 
 **Open the gear icon in the sidebar first** — `settings.php` checks every
@@ -172,8 +206,9 @@ A few notes on how to read it:
 - **Run a live draft test** is separate because it really calls OpenAI
   and therefore costs a model call. Nothing on the page does that unless
   you click it.
-- The AI model and prompt are editable here; API keys are not, and stay
-  in `config/config.php`.
+- The AI model and prompt are editable here, and the **catalog** is
+  uploaded here; API keys are not editable, and stay in
+  `config/config.php`.
 
 If the page itself will not load, or you need the underlying detail, the
 app logs the real error and shows only a generic message in the browser.
@@ -210,6 +245,7 @@ and reached over HTTPS — so you can ignore it entirely.
     whatsapp.php        360dialog Cloud API client (curl-based)
     ai.php              OpenAI client (curl-based) — chat and vision
     media.php           media store layout, mime allowlist, path safety
+    countries.php       dialling prefix → country name and flag
     auth.php            shared-password sessions; require_auth()
     app.php             small request/response helpers
     db_functions.php    all data access lives here, one function per operation
@@ -220,6 +256,9 @@ and reached over HTTPS — so you can ignore it entirely.
     send.php            POST — deliver a message over WhatsApp
     upload.php          POST — stage an outbound attachment
     media.php           GET  — stream a stored media file
+    avatar.php          GET/POST/DELETE — a customer's profile photo
+    catalog.php         GET/POST/DELETE — the one-click catalog file
+    templates.php       GET  — the approved templates on this number
     draft.php           POST — ask OpenAI for a draft reply
     settings.php        GET/PUT — the editable AI settings
     health.php          GET  — one connection check per request
@@ -233,6 +272,8 @@ and reached over HTTPS — so you can ignore it entirely.
     .htaccess           Require all denied
     media/YYYY/MM/…     inbound media (gitignored)
     media/outbox/…      staged outbound media (gitignored)
+    media/avatars/…     customer profile photos (gitignored)
+    media/catalog/…     the uploaded catalog file (gitignored)
 index.php               the app (behind login)
 login.php               sign in; login.php?logout=1 signs out
 settings.php            AI prompt/model + connection health
@@ -276,6 +317,56 @@ confirming to a prober that the endpoint exists.
 The open conversation polls every 8s and the sidebar every 25s, so the new
 message appears without a reload. Both pause while the tab is hidden.
 
+### Replies you send from your phone
+
+If your number runs **WhatsApp Coexistence** — the WhatsApp Business app
+and the Cloud API on the same line — then a reply someone taps out on
+their phone is mirrored into the CRM. Meta sends it back on the same
+webhook as an `smb_message_echoes` event, and it lands in the thread as
+an outbound message tagged **Sent from the WhatsApp app**, so you can
+tell at a glance which replies came from here and which did not.
+
+Without it, the CRM shows a customer's question with no answer under it
+while the customer has in fact already been answered — which reads as a
+dropped conversation, and gets it answered twice.
+
+Editing or deleting one of those messages from the phone is mirrored
+too: an edit rewrites the text in place, and a delete strikes the message
+through and marks it **Deleted** rather than removing the row, because
+what was said and then withdrawn is part of the conversation and dropping
+it leaves the customer's next message answering nothing.
+
+Two things to know:
+
+- **This only works on a coexistence number.** A number migrated to the
+  Cloud API the ordinary way is disconnected from the WhatsApp Business
+  app, so there is nothing to mirror. See "Turning on coexistence" below.
+- **`smb_message_echoes` must be subscribed** on the number's webhook.
+  If it isn't, nothing arrives and there is no error to see — the CRM
+  simply never hears about those messages.
+
+An echoed message does **not** reopen the 24-hour window. That window is
+opened by the customer speaking, and us replying is not that.
+
+#### Turning on coexistence
+
+This is done in 360dialog, not in the CRM — there is nothing to configure
+here beyond having run the current `sql/schema.sql`.
+
+1. Onboard the number with **coexistence** in the 360dialog Hub (an
+   existing WhatsApp Business app number, connected via the QR-code flow
+   rather than a full migration).
+2. Make sure the number's webhook subscribes to the
+   **`smb_message_echoes`** field, alongside `messages`.
+3. Send a message to a customer from the phone. It should appear in the
+   CRM within a few seconds, tagged **Sent from the WhatsApp app**. If it
+   doesn't, check the PHP error log for `[WhatsApp]` lines.
+
+Note that the *existing* history on the phone is not imported — only
+messages sent from the moment coexistence is on. Meta does offer a
+one-time history sync on a separate `history` webhook; this CRM does not
+read it yet.
+
 ### A reply goes out
 
 - **Draft** sends the conversation history and customer context to
@@ -290,13 +381,44 @@ message appears without a reload. Both pause while the tab is hidden.
   WhatsApp when Send is pressed. The file's mime is re-read from its own
   bytes with `finfo_file()`, never taken from the browser.
 
-### The 24-hour window
+### The 24-hour window, and templates
 
 WhatsApp only allows a free-form reply within 24 hours of the customer's
-last inbound message. After that a business must send an **approved
-template**, which this CRM does not do — so it blocks sending instead and
-says why. The header shows how long is left; `api/send.php` enforces the
-same rule server-side and answers `409`.
+last inbound message. After that the only thing Meta will carry is a
+**template approved in advance**. The header shows how long is left, and
+`api/send.php` enforces the rule server-side with a `409` — a template is
+the one message type that skips that check, because it is the one type
+WhatsApp still delivers.
+
+When the window closes, the notice above the composer offers **Send a
+template**. The picker lists every template on the number, fetched live
+from 360dialog, and shows the ones it cannot send greyed out with the
+reason — still in review, or needing a header/button value this page has
+nowhere to put. Choosing one draws an input per `{{1}}` placeholder and
+previews the finished message; what gets stored in the thread is that
+finished text, not the raw `Hi {{1}}`, so the next agent to open the
+conversation reads what the customer actually received.
+
+### Asking a question
+
+**Attach → Ask a question** sends up to three tappable answers alongside
+the question. The tap comes back on the webhook as an ordinary inbound
+message, so the answer lands in the thread — and in the AI's context —
+without anyone having to interpret "yeah the small one I think". The
+options the customer was offered are drawn under the question in the
+thread, so the answer that follows is never a non sequitur.
+
+WhatsApp's limits apply and are enforced before sending: three buttons,
+20 characters each.
+
+### The catalog
+
+**Settings → Catalog** takes one file for the whole business. After that
+**Attach → Send catalog** delivers it in one tap, with whatever is in the
+composer as the caption. Nothing about which file is sent comes from the
+browser — `api/send.php` reads the stored setting itself — so it is
+always the current version rather than whichever copy was on someone's
+laptop.
 
 ### Media
 
@@ -321,7 +443,29 @@ webhook logs the store's total size periodically; watch for
 panel. Such a record has no `wa_id`, so it has no WhatsApp thread and
 cannot be sent to until a real message links a number to it. The details
 panel edits the profile fields; `last_inbound_at` is deliberately not one
-of them, since it gates sending.
+of them, since it gates sending. Neither is `avatar_path` — it is a
+location inside `storage/`, and `api/avatar.php` is the only thing that
+writes it, from bytes it validated itself.
+
+Three things about a customer are not typed in:
+
+- **The country.** It is in the dialling prefix, so `config/countries.php`
+  works it out and the flag appears beside the name in the list, the
+  header and the details panel. The country *field* is filled in once on
+  first contact and is editable after that — a number can be a roaming
+  SIM or a virtual line, and a prefix table must never overwrite what an
+  agent knows. The panel shows what the number suggests as a note beside
+  the field, with a one-click **Use**.
+- **The label.** A number the webhook has just met is marked **New
+  customer**; an agent moves them to **Old customer**, or clears it, from
+  the details panel. A closed set of two rather than free text, because
+  the point is to tell first contacts apart at a glance and that stops
+  working the moment `New` and `new customer` are two different labels.
+- **Not** the profile photo. WhatsApp does not hand out a contact's own
+  picture — the Cloud API exposes the business profile's photo and
+  nothing about the person on the other end — so **Change photo** in the
+  details panel is how one gets set. Without one, the avatar is initials,
+  exactly as before.
 
 ## 5. The AI
 
@@ -337,6 +481,7 @@ drift out of sync with reality.
 | `OPENAI_API_KEY` | `config/config.php` | It is a secret. The app never writes to that file. |
 | Model | **Settings page** | Changes often; no reason to need a file edit and a re-upload. |
 | System prompt | **Settings page** | Same — and the person tuning it is rarely the person with SSH. |
+| Catalog file | **Settings page** | Uploaded, not typed: `api/settings.php` will not write the keys behind it, because one of them is a path inside `storage/`. |
 
 The model and prompt live in the `livar_settings` table. A fresh install
 runs on the built-in defaults in `SETTING_DEFAULTS`
@@ -346,6 +491,21 @@ settings page. Saving an empty prompt restores the default.
 The model picker autocompletes from the models your key can actually
 use, fetched live from OpenAI — a hardcoded list would offer models that
 only fail at draft time. Free text is still accepted.
+
+**Any model id works, old or new.** OpenAI renamed `max_tokens` to
+`max_completion_tokens`, and the newer models — the o-series, and gpt-5
+and later — reject a request that uses the old name outright, as do they
+a `temperature` other than the default. `config/ai.php` sends the modern
+spelling, and if the provider objects it reads the parameter name out of
+the provider's own 400 and retries corrected, remembering the answer for
+the rest of the request. So a model this CRM has never heard of still
+drafts, and an OpenAI-compatible service behind a custom
+`OPENAI_BASE_URL` that only knows the legacy name works too.
+
+One thing to know about reasoning models: they spend the same token
+budget on thinking as on writing, so a small cap can be used up before a
+single word of the reply exists. That comes back as a specific error
+naming the budget rather than a bare "empty reply".
 
 ### Pressing Draft
 

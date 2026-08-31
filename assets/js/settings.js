@@ -13,6 +13,7 @@
 
     const API_HEALTH = 'api/health.php';
     const API_SETTINGS = 'api/settings.php';
+    const API_CATALOG = 'api/catalog.php';
 
     const el = {
         list: document.getElementById('healthList'),
@@ -29,6 +30,12 @@
         aiPrompt: document.getElementById('aiPrompt'),
         aiSaveBtn: document.getElementById('aiSaveBtn'),
         aiResetBtn: document.getElementById('aiResetBtn'),
+        // Catalog
+        catalogInfo: document.getElementById('catalogInfo'),
+        catalogInput: document.getElementById('catalogInput'),
+        catalogPickBtn: document.getElementById('catalogPickBtn'),
+        catalogViewLink: document.getElementById('catalogViewLink'),
+        catalogRemoveBtn: document.getElementById('catalogRemoveBtn'),
     };
 
     /** Filled from the server so "Restore default" matches PHP exactly. */
@@ -298,6 +305,94 @@
         toast('Defaults restored — press Save to keep them.');
     });
 
+    // ------------------------------------------------------------------
+    // Catalog
+    //
+    // Uploaded through api/catalog.php rather than saved with the form
+    // above: one of the values behind it is a path inside storage/, and
+    // an endpoint that took a path from a JSON body would be letting the
+    // browser choose a file for api/send.php to open.
+    // ------------------------------------------------------------------
+
+    function formatBytes(bytes) {
+        const n = Number(bytes);
+        if (!Number.isFinite(n) || n <= 0) return '';
+        if (n < 1024) return `${n} B`;
+        if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`;
+        return `${(n / 1048576).toFixed(1)} MB`;
+    }
+
+    function paintCatalog(catalog) {
+        const available = catalog?.available === true;
+
+        el.catalogViewLink.hidden = !available;
+        el.catalogRemoveBtn.hidden = !available;
+        el.catalogPickBtn.textContent = available ? 'Replace it' : 'Upload a file';
+
+        el.catalogInfo.textContent = available
+            ? `${catalog.name} · ${formatBytes(catalog.size)}`
+            : 'No catalog uploaded yet. Until there is one, the “Send catalog” item in the inbox is greyed out.';
+        el.catalogInfo.classList.toggle('catalog__info--empty', !available);
+    }
+
+    async function loadCatalog() {
+        try {
+            const data = await api(API_CATALOG);
+            if (data) paintCatalog(data.catalog);
+        } catch (err) {
+            el.catalogInfo.textContent = err.message;
+        }
+    }
+
+    el.catalogPickBtn.addEventListener('click', () => el.catalogInput.click());
+
+    el.catalogInput.addEventListener('change', async () => {
+        const file = el.catalogInput.files?.[0];
+        // Reset immediately so picking the same file twice still fires.
+        el.catalogInput.value = '';
+        if (!file) return;
+
+        el.catalogPickBtn.disabled = true;
+        el.catalogInfo.textContent = 'Uploading…';
+
+        try {
+            const body = new FormData();
+            body.append('file', file);
+            // Not through api(): that forces application/json, and the
+            // browser has to set the multipart boundary itself.
+            const res = await fetch(API_CATALOG, { method: 'POST', body });
+            const data = await res.json();
+            if (!res.ok || data.success === false) {
+                throw new Error(data.error || 'That file could not be saved.');
+            }
+
+            paintCatalog(data.catalog);
+            toast('Catalog uploaded.');
+        } catch (err) {
+            toast(err.message, 'error');
+            loadCatalog();
+        } finally {
+            el.catalogPickBtn.disabled = false;
+        }
+    });
+
+    el.catalogRemoveBtn.addEventListener('click', async () => {
+        el.catalogRemoveBtn.disabled = true;
+
+        try {
+            const data = await api(API_CATALOG, { method: 'DELETE' });
+            if (data) {
+                paintCatalog(data.catalog);
+                toast('Catalog removed.');
+            }
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            el.catalogRemoveBtn.disabled = false;
+        }
+    });
+
     loadSettings();
+    loadCatalog();
     runAll();
 })();
