@@ -29,6 +29,7 @@ require_once __DIR__ . '/../config/app.php';
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../config/media.php';
 require_once __DIR__ . '/../config/whatsapp.php';
+require_once __DIR__ . '/../config/ai.php';
 
 require_auth();
 
@@ -45,7 +46,7 @@ const HEALTH_CHECKS = [
     'schema'    => 'Database schema',
     'whatsapp'  => '360dialog API key',
     'webhook'   => '360dialog webhook',
-    'n8n'       => 'n8n draft service',
+    'openai'    => 'OpenAI connection',
     'storage'   => 'Media storage',
     'php'       => 'PHP environment',
 ];
@@ -63,8 +64,8 @@ try {
 
     // Actions are real calls with a real cost, so they are never in the
     // list the page auto-runs -- only a deliberate click reaches them.
-    if ($check === 'n8n_live') {
-        json_response(['success' => true, 'result' => ['key' => 'n8n_live', 'label' => 'Live draft test'] + checkN8nLive()]);
+    if ($check === 'ai_live') {
+        json_response(['success' => true, 'result' => ['key' => 'ai_live', 'label' => 'Live draft test'] + checkAiLive()]);
     }
 
     if (!isset(HEALTH_CHECKS[$check])) {
@@ -77,7 +78,7 @@ try {
         'schema'   => checkSchema(),
         'whatsapp' => checkWhatsApp(),
         'webhook'  => checkWebhook(),
-        'n8n'      => checkN8n(),
+        'openai'   => checkOpenAi(),
         'storage'  => checkStorage(),
         'php'      => checkPhp(),
     };
@@ -106,7 +107,7 @@ function checkConfig(): array
         'CRM_PASSWORD_HASH'      => 'CRM password hash',
         'D360_API_KEY'           => '360dialog API key',
         'WHATSAPP_WEBHOOK_TOKEN' => 'Webhook token',
-        'N8N_WEBHOOK_URL'        => 'n8n webhook URL',
+        'OPENAI_API_KEY'         => 'OpenAI API key',
     ];
 
     $detail  = [];
@@ -402,181 +403,124 @@ function checkWebhook(): array
 }
 
 /**
- * Is n8n up?
+ * Is OpenAI reachable, is the key good, and does the chosen model exist?
  *
- * Deliberately a GET, not a POST. An n8n webhook registered for POST
- * answers a GET with a 404 that names the method -- which proves both
- * that the host is up and that the workflow exists, without running the
- * agent or spending a model call. The settings page offers a real draft
- * as a separate, explicit action.
+ * Listing models is the right probe: it is cheap, it proves the key, and
+ * it is the only way to catch the failure that would otherwise surface
+ * as a confusing 404 at draft time -- a model id that this account
+ * cannot use.
  */
-function checkN8n(): array
+function checkOpenAi(): array
 {
-    $url = defined('N8N_WEBHOOK_URL') ? (string) N8N_WEBHOOK_URL : '';
-    if ($url === '' || str_contains($url, 'your-n8n-host')) {
+    if (!AI::isConfigured()) {
         return [
             'status'  => 'fail',
-            'summary' => 'No webhook URL configured',
-            'detail'  => ['N8N_WEBHOOK_URL is still a placeholder, so the Draft button cannot work.'],
-            'hint'    => 'Set N8N_WEBHOOK_URL in config/config.php — see README section 5.',
+            'summary' => 'No API key configured',
+            'detail'  => ['OPENAI_API_KEY is unset or still a placeholder, so the Draft button cannot work.'],
+            'hint'    => 'Set OPENAI_API_KEY in config/config.php.',
         ];
     }
 
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 6,
-        CURLOPT_TIMEOUT        => 10,
-        CURLOPT_SSL_VERIFYPEER => true,
-    ]);
-    $body   = (string) curl_exec($ch);
-    $errno  = curl_errno($ch);
-    $error  = curl_error($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    $model  = getSetting('ai_model');
+    $detail = ['Model in use: ' . ($model !== '' ? $model : '(none set)')];
 
-    if ($errno !== 0) {
+    $started = microtime(true);
+
+    try {
+        $models = AI::client()->listModels();
+    } catch (AIException $e) {
         return [
             'status'  => 'fail',
-            'summary' => 'Could not reach n8n',
-            'detail'  => ['No HTTP response from the configured webhook host.', $error],
-            'hint'    => 'Check that n8n is running and reachable over HTTPS from this server.',
+            'summary' => $e->httpStatus === 401 ? 'API key rejected' : 'Could not reach OpenAI',
+            'detail'  => array_merge($detail, [$e->getMessage()]),
+            'hint'    => $e->httpStatus === 401
+                ? 'Recopy OPENAI_API_KEY from platform.openai.com.'
+                : 'Check outbound HTTPS from this server, and the account\'s billing status.',
         ];
     }
 
-    // n8n's own wording when a POST-only webhook is fetched with GET.
-    if (stripos($body, 'not registered for GET') !== false) {
-        return [
-            'status'  => 'ok',
-            'summary' => 'Reachable, workflow is listening',
-            'detail'  => ['n8n replied that this webhook takes POST, not GET — which is exactly right.'],
-            'hint'    => '',
-        ];
-    }
+    $ms       = (int) round((microtime(true) - $started) * 1000);
+    $detail[] = count($models) . ' models available to this key · listed in ' . $ms . ' ms';
 
-    if ($status === 404) {
+    if ($model === '') {
         return [
             'status'  => 'fail',
-            'summary' => 'Host is up, but the workflow is not there',
-            'detail'  => ['n8n answered 404. The workflow is probably inactive, or the UUID in the URL is wrong.'],
-            'hint'    => 'Activate the workflow in n8n and check the path matches N8N_WEBHOOK_URL.',
+            'summary' => 'No model chosen',
+            'detail'  => $detail,
+            'hint'    => 'Pick one under "AI replies" above.',
         ];
     }
 
-    if ($status >= 200 && $status < 500) {
+    if (!in_array($model, $models, true)) {
         return [
-            'status'  => 'ok',
-            'summary' => "Reachable (HTTP {$status})",
-            'detail'  => ['The host answered. Use "Run a live draft test" below to exercise the agent itself.'],
-            'hint'    => '',
+            'status'  => 'warn',
+            'summary' => 'Chosen model is not in this account\'s list',
+            'detail'  => array_merge($detail, [
+                "\"{$model}\" did not come back from /v1/models.",
+                'Some accounts can still use a model that is not listed, so this may be fine.',
+            ]),
+            'hint'    => 'If drafting fails with a 404, this is why — pick a listed model.',
         ];
     }
+
+    // A prompt long enough to matter is worth flagging: it is sent on
+    // every single draft, so it is the biggest recurring token cost.
+    $promptChars = mb_strlen(getSetting('ai_system_prompt'));
+    $detail[]    = "System prompt: {$promptChars} characters, sent with every draft";
 
     return [
-        'status'  => 'warn',
-        'summary' => "Unexpected reply (HTTP {$status})",
-        'detail'  => ['The host answered, but with a server error.'],
-        'hint'    => 'Check the n8n execution log.',
+        'status'  => 'ok',
+        'summary' => "Connected · {$model}",
+        'detail'  => $detail,
+        'hint'    => $promptChars > 6000
+            ? 'That prompt is long. It is billed on every draft — consider trimming it.'
+            : '',
     ];
 }
 
 /**
- * Actually asks n8n for a draft, end to end.
+ * Actually asks OpenAI for a draft, using the real prompt and model.
  *
- * This runs the AI agent and therefore costs a model call, so it is only
- * ever reached by an explicit click -- never by the page loading. It
- * sends a throwaway conversation and writes nothing to the database.
+ * Costs a model call, so it is only ever reached by an explicit click.
+ * Sends a throwaway conversation and writes nothing.
  */
-function checkN8nLive(): array
+function checkAiLive(): array
 {
-    $url = defined('N8N_WEBHOOK_URL') ? (string) N8N_WEBHOOK_URL : '';
-    if ($url === '' || str_contains($url, 'your-n8n-host')) {
+    if (!AI::isConfigured()) {
         return [
             'status'  => 'fail',
-            'summary' => 'No webhook URL configured',
-            'detail'  => ['Set N8N_WEBHOOK_URL first.'],
+            'summary' => 'No API key configured',
+            'detail'  => ['Set OPENAI_API_KEY first.'],
             'hint'    => '',
         ];
     }
 
-    $payload = json_encode([
-        'session_id' => 'health_check',
-        'history'    => [
-            ['role' => 'user', 'content' => 'Hello, do you sell 500 ml plastic cans?'],
-        ],
-        'customer'   => ['first_name' => 'Health', 'last_name' => 'Check', 'wa_id' => null],
-    ], JSON_UNESCAPED_UNICODE);
+    $settings = getSettings();
+    $started  = microtime(true);
 
-    $started = microtime(true);
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => $payload,
-        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT        => defined('N8N_TIMEOUT_SECONDS') ? (int) N8N_TIMEOUT_SECONDS : 45,
-        CURLOPT_SSL_VERIFYPEER => true,
-    ]);
-    $body   = (string) curl_exec($ch);
-    $errno  = curl_errno($ch);
-    $error  = curl_error($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    try {
+        $draft = AI::client()->chat([
+            ['role' => 'system', 'content' => $settings['ai_system_prompt']],
+            ['role' => 'user',   'content' => 'Hello, do you sell 500 ml plastic cans?'],
+        ], $settings['ai_model']);
+    } catch (AIException $e) {
+        return [
+            'status'  => 'fail',
+            'summary' => 'OpenAI could not produce a draft',
+            'detail'  => [$e->getMessage()],
+            'hint'    => $e->httpStatus === 404
+                ? 'That usually means the model id is wrong for this account.'
+                : 'The full response is in the PHP error log on the [AI] line.',
+        ];
+    }
 
     $secs = round(microtime(true) - $started, 1);
 
-    if ($errno !== 0) {
-        return [
-            'status'  => 'fail',
-            'summary' => 'Could not reach n8n',
-            'detail'  => [$error],
-            'hint'    => 'Check that n8n is running and reachable over HTTPS from this server.',
-        ];
-    }
-
-    if ($status < 200 || $status >= 300) {
-        return [
-            'status'  => 'fail',
-            'summary' => "n8n returned HTTP {$status}",
-            'detail'  => ['Response: ' . mb_substr($body, 0, 300)],
-            'hint'    => 'Open the workflow execution log in n8n to see which node failed.',
-        ];
-    }
-
-    // Same tolerant extraction api/webhook.php uses, so this test agrees
-    // with what the Draft button will actually do.
-    $draft   = null;
-    $decoded = json_decode($body, true);
-    if (is_array($decoded) && array_is_list($decoded) && is_array($decoded[0] ?? null)) {
-        $decoded = $decoded[0];
-    }
-    if (is_string($decoded)) {
-        $draft = trim($decoded);
-    } elseif (is_array($decoded)) {
-        foreach (['draft', 'output', 'text', 'reply', 'message', 'content'] as $key) {
-            if (isset($decoded[$key]) && is_string($decoded[$key]) && trim($decoded[$key]) !== '') {
-                $draft = trim($decoded[$key]);
-                break;
-            }
-        }
-    }
-
-    if ($draft === null) {
-        return [
-            'status'  => 'fail',
-            'summary' => 'n8n answered, but with no draft in it',
-            'detail'  => ['Response: ' . mb_substr($body, 0, 300)],
-            'hint'    => 'The Respond to Webhook node should return { "draft": "..." }. See README section 5, step 4.',
-        ];
-    }
-
     return [
         'status'  => 'ok',
-        'summary' => "Draft returned in {$secs}s",
-        'detail'  => ['n8n replied: “' . mb_substr($draft, 0, 220) . (mb_strlen($draft) > 220 ? '…' : '') . '”'],
-        'hint'    => $secs > 30 ? 'That is close to the ' . N8N_TIMEOUT_SECONDS . 's timeout. Consider a faster model.' : '',
+        'summary' => "Draft returned in {$secs}s using {$settings['ai_model']}",
+        'detail'  => ['Replied: “' . mb_substr($draft, 0, 220) . (mb_strlen($draft) > 220 ? '…' : '') . '”'],
+        'hint'    => $secs > 20 ? 'That is slow enough that agents will notice. Consider a faster model.' : '',
     ];
 }
 

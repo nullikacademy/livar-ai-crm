@@ -12,6 +12,20 @@
     <form class="details-form" id="detailsForm">
         <input type="hidden" id="field_session_id" name="session_id" />
 
+        <!--
+            The name the customer uses on WhatsApp. Read-only: it belongs
+            to their account, not to us. Shown here because it is what the
+            chat header displays when nobody has typed a name yet, which
+            otherwise makes the empty fields below look like lost data.
+        -->
+        <div class="field" id="waNameField" hidden>
+            <label>WhatsApp name</label>
+            <div class="details-form__readonly details-form__readonly--name">
+                <span id="field_wa_profile_name">—</span>
+                <button type="button" class="btn-link" id="useWaNameBtn">Use as name</button>
+            </div>
+        </div>
+
         <div class="details-form__row details-form__row--2">
             <div class="field">
                 <label for="field_first_name">First name</label>

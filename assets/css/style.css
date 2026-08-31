@@ -1096,6 +1096,29 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     word-break: break-all;
 }
 
+/* A person's name, not an identifier — so it reads as text, not code. */
+.details-form__readonly--name {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    word-break: normal;
+    overflow-wrap: anywhere;
+}
+
+.btn-link {
+    flex-shrink: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-active);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.btn-link:hover { color: var(--accent-hover); }
+
 .details-form__actions {
     position: sticky;
     bottom: 0;
@@ -1265,6 +1288,7 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 
 .settings__section { margin-top: 28px; }
+.settings__section--first { margin-top: 4px; }
 .settings__section h2 {
     margin: 0 0 4px;
     font-size: 14px;
@@ -1302,6 +1326,63 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     background: var(--surface-3);
 }
 .settings__footer a { color: var(--accent-active); }
+
+/* AI settings form */
+.ai-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--line);
+}
+
+.ai-form textarea {
+    width: 100%;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    border-radius: var(--r-sm);
+    padding: 11px 12px;
+    /* The prompt is prose but it is also configuration: a monospace face
+       makes trailing whitespace and stray characters visible. */
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    resize: vertical;
+    min-height: 180px;
+    transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.ai-form textarea:focus,
+.ai-form input:focus {
+    outline: none;
+    background: var(--surface);
+    border-color: var(--accent);
+}
+
+.ai-form input[type="text"] {
+    width: 100%;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    border-radius: var(--r-sm);
+    padding: 11px 12px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 14px;
+    transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.field__help {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ink-3);
+}
+
+.ai-form__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
 
 /* One-line verdict above the list. */
 .health-summary {

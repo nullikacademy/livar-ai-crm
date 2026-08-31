@@ -32,9 +32,17 @@ try {
     $sinceId = isset($_GET['since_id']) ? max(0, (int) $_GET['since_id']) : 0;
     $limit   = isset($_GET['limit']) ? max(1, min(500, (int) $_GET['limit'])) : 200;
 
+    // getMessages() carries `_media_path` for the draft builder, which
+    // needs the file on disk. The browser gets api/media.php?id=<n>
+    // instead -- a path on the server has no business in a response.
+    $messages = array_map(static function (array $msg): array {
+        unset($msg['_media_path']);
+        return $msg;
+    }, getMessages($sessionId, $sinceId, $limit));
+
     json_response([
         'success'  => true,
-        'messages' => getMessages($sessionId, $sinceId, $limit),
+        'messages' => $messages,
     ]);
 } catch (SupabaseException $e) {
     error_log('[api/messages] ' . $e->getMessage());

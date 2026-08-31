@@ -2,12 +2,12 @@
 
 Mobile-first, WhatsApp-style CRM — and a real WhatsApp inbox on the
 360dialog Cloud API. PHP 8.1+ backend, vanilla HTML/CSS/JS frontend,
-Supabase (PostgREST) for data, n8n for AI-drafted replies.
+Supabase (PostgREST) for data, OpenAI for AI-drafted replies.
 **No build step, no package manager, no test suite** — edit a file and
 reload the page.
 
 Read `README.md` first: it documents the setup, the request flow, the
-360dialog wiring and the n8n workflow in detail. This file only covers
+360dialog wiring and how the AI is configured. This file only covers
 what isn't obvious from it.
 
 ## Setup in a fresh clone
@@ -18,7 +18,7 @@ password hash — and this repo is public). To run anything:
 
 ```bash
 cp config/config.example.php config/config.php
-# then fill in SUPABASE_URL, SUPABASE_SERVICE_KEY, N8N_WEBHOOK_URL,
+# then fill in SUPABASE_URL, SUPABASE_SERVICE_KEY, OPENAI_API_KEY,
 # CRM_PASSWORD_HASH, D360_API_KEY and WHATSAPP_WEBHOOK_TOKEN
 ```
 
@@ -35,13 +35,25 @@ README** — the template stays placeholders-only.
 - **All data access lives in `config/db_functions.php`**, one function per
   operation. Routes in `/api` include that file; they never call
   `Supabase::client()` directly. WhatsApp calls go through
-  `config/whatsapp.php`, media-on-disk rules through `config/media.php`.
+  `config/whatsapp.php`, OpenAI through `config/ai.php`, media-on-disk
+  rules through `config/media.php`.
 - **The CRM is the only writer to `n8n_chat_history`.** Inbound rows come
-  from `api/whatsapp_webhook.php`, outbound ones from `api/send.php`.
-  n8n is a stateless draft generator: it receives conversation history,
-  returns text, and touches no table. Its workflow must have **no
-  Supabase insert nodes and no Postgres Chat Memory node** — either
-  would double-write the history the CRM now owns.
+  from `api/whatsapp_webhook.php`, outbound ones from `api/send.php`. The
+  table keeps its legacy name; nothing outside this app writes to it.
+- **Drafting runs in-app, not in n8n.** `api/draft.php` calls OpenAI
+  directly. A draft is never persisted — it goes into the composer, and
+  only becomes a row if the agent presses Send.
+- **The model and system prompt are database settings, not constants.**
+  They live in `livar_settings` so the settings page can change them;
+  `SETTING_DEFAULTS` in `db_functions.php` holds the fallbacks. API keys
+  stay in `config/config.php`, which the app must never write to. Any new
+  editable setting needs a key in `SETTING_DEFAULTS` — `api/settings.php`
+  refuses to read or write anything not declared there.
+- **Photos reach the model two ways.** The most recent `DRAFT_IMAGE_LIMIT`
+  photos are attached as real images; every photo also gets a one-line
+  `ai_caption` on arrival, used for the sidebar preview and for older
+  photos. Captioning must never be fatal — an unconfigured or failing AI
+  cannot be allowed to cost us the inbound message.
 - **Everything is behind `require_auth()` except `api/whatsapp_webhook.php`.**
   360dialog can't log in, so that one endpoint authenticates on an
   unguessable token in its own URL, compared with `hash_equals()`, and
@@ -57,12 +69,12 @@ README** — the template stays placeholders-only.
   never `ok`, and a check that could not run says so instead of guessing
   a cause. It must never return a key, token or hash — presence only, and
   the webhook token is shown as a fingerprint.
-- **Errors:** log the real cause with `error_log('[Supabase] ...')` or
-  `error_log('[WhatsApp] ...')` and return a generic message to the
-  browser via `json_error()`. The one exception is `api/send.php`, which
-  passes the provider's own wording through: "message failed" with no
-  reason can't tell an agent whether to retry, fix the number, or phone
-  the customer.
+- **Errors:** log the real cause with `error_log('[Supabase] ...')`,
+  `'[WhatsApp] ...'` or `'[AI] ...'` and return a generic message to the
+  browser via `json_error()`. The exceptions are `api/send.php` and
+  `api/draft.php`, which pass the provider's own wording through: neither
+  "message failed" nor "the AI failed" can tell an agent whether to
+  retry, fix a number, top up a balance, or phone the customer.
 - **Schema changes** go in `sql/schema.sql`, which must stay safe to
   re-run (`create ... if not exists`, `create or replace function`). A
   function whose `returns table` changes needs an explicit
@@ -86,9 +98,11 @@ README** — the template stays placeholders-only.
 
 - `declare(strict_types=1);` at the top of every PHP file.
 - Typed function signatures and return types; docblocks on public helpers.
-- Frontend is one file, `assets/js/app.js` — plain DOM APIs and `fetch`,
-  no framework, no bundler. `index.php`'s `asset()` helper appends
-  `?v=<filemtime>` for cache-busting, so no manual version bumps.
+- Two frontend files, both plain DOM APIs and `fetch`, no framework and
+  no bundler: `assets/js/app.js` is the inbox, `assets/js/settings.js`
+  the settings page. They share nothing on purpose — a diagnostics page
+  should not load the chat logic. `asset()` appends `?v=<filemtime>` for
+  cache-busting, so no manual version bumps.
 - 4-space indent in PHP and JS.
 
 ## Verifying a change

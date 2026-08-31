@@ -15,7 +15,7 @@
     const API = {
         customers: 'api/customers.php',
         messages: 'api/messages.php',
-        webhook: 'api/webhook.php',
+        draft: 'api/draft.php',
         send: 'api/send.php',
         upload: 'api/upload.php',
     };
@@ -914,7 +914,7 @@
         showTypingIndicator();
 
         try {
-            const data = await api(API.webhook, {
+            const data = await api(API.draft, {
                 method: 'POST',
                 body: JSON.stringify({ session_id: sessionId }),
             });
@@ -1518,6 +1518,11 @@
         document.getElementById('field_session_id').value = state.selectedCustomer.session_id;
         document.getElementById('field_session_id_display').textContent = state.selectedCustomer.session_id;
 
+        // Only meaningful for a real WhatsApp contact.
+        const waName = state.selectedCustomer.wa_profile_name || '';
+        document.getElementById('waNameField').hidden = waName === '';
+        document.getElementById('field_wa_profile_name').textContent = waName || '—';
+
         el.panelOverlay.hidden = false;
         requestAnimationFrame(() => {
             el.detailsPanel.classList.add('is-open');
@@ -1530,6 +1535,19 @@
         el.detailsPanel.setAttribute('aria-hidden', 'true');
         setTimeout(() => { el.panelOverlay.hidden = true; }, 220);
     }
+
+    // Copies the WhatsApp name into the editable fields, so an agent can
+    // make it the customer's real name in one click instead of retyping
+    // a name that is already on screen.
+    document.getElementById('useWaNameBtn').addEventListener('click', () => {
+        const waName = state.selectedCustomer?.wa_profile_name || '';
+        if (!waName) return;
+
+        const parts = waName.trim().split(/\s+/);
+        document.getElementById('field_first_name').value = parts.shift() || '';
+        document.getElementById('field_last_name').value = parts.join(' ');
+        document.getElementById('field_first_name').focus();
+    });
 
     el.chatCustomerBtn.addEventListener('click', openDetailsPanel);
     el.chatDetailsBtn.addEventListener('click', openDetailsPanel);

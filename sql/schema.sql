@@ -83,6 +83,11 @@ alter table public.n8n_chat_history
     -- file the webhook never managed to fetch. Meta expires media after
     -- roughly 30 days, after which this is only a record of what was.
     add column if not exists wa_media_id   text,
+    -- One-line description of a photo, written by the vision model when
+    -- the file lands. Used for the sidebar preview and for older photos
+    -- that fall outside the window where the real image is attached to a
+    -- draft. Null means "not captioned" -- the AI may be unconfigured.
+    add column if not exists ai_caption    text,
     add column if not exists media_path    text,
     add column if not exists media_mime    text,
     add column if not exists media_size    bigint,
@@ -106,6 +111,17 @@ create unique index if not exists idx_chat_wa_message_id
     on public.n8n_chat_history (wa_message_id);
 create index if not exists idx_chat_created_at
     on public.n8n_chat_history (session_id, created_at desc);
+
+-- Editable application settings ------------------------------------------
+-- The AI system prompt and model live here rather than in
+-- config/config.php, because the settings page has to be able to change
+-- them and config.php is a secrets file the app must never write to.
+-- Everything here is non-secret by design: API keys stay in config.php.
+create table if not exists public.livar_settings (
+    key        text primary key,
+    value      text,
+    updated_at timestamptz not null default now()
+);
 
 -- ============================================================================
 -- RPC function used by the CRM's REST-based data layer (config/db_functions.php)
@@ -141,6 +157,10 @@ returns table (
     tax_id             text,
     details            text,
     wa_id              text,
+    -- The name the customer uses on WhatsApp. Without this the sidebar
+    -- falls back to the bare phone number for anyone an agent has not
+    -- typed a name for, which is most of a real inbox.
+    wa_profile_name    text,
     last_inbound_at    timestamptz,
     last_message       text,
     last_message_type  text,
@@ -169,11 +189,13 @@ as $$
     select
         f.id, f.created_at, f.session_id, f.first_name, f.last_name, f.username,
         f.phone, f.country, f.email, f.city, f.address, f.tax_id, f.details,
-        f.wa_id, f.last_inbound_at,
+        f.wa_id, f.wa_profile_name, f.last_inbound_at,
         -- A photo must not read as "No messages yet" in the sidebar, so
         -- media rows get a short label instead of their (empty) content.
         case lm.msg_type
-            when 'image'    then '📷 Photo'
+            -- Once the vision model has labelled a photo, the label is a
+            -- far better preview than the word "Photo".
+            when 'image'    then '📷 ' || coalesce(nullif(lm.ai_caption, ''), 'Photo')
             when 'video'    then '🎥 Video'
             when 'audio'    then '🎤 Voice message'
             when 'document' then '📄 ' || coalesce(lm.media_name, 'Document')
@@ -196,7 +218,8 @@ as $$
             h.id,
             h.created_at,
             h.msg_type,
-            h.media_name
+            h.media_name,
+            h.ai_caption
         from public.n8n_chat_history h
         where h.session_id = f.session_id
         order by h.id desc

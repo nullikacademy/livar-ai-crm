@@ -1,14 +1,18 @@
 <?php
 /**
- * settings.php — connection health.
+ * settings.php — AI configuration and connection health.
  *
- * Read-only. Nothing here changes a setting; config/config.php stays the
- * single place anything is edited. This page exists to answer one
- * question quickly: when the CRM misbehaves, which of Supabase,
- * 360dialog or n8n is actually at fault?
+ * Two jobs. It edits the AI system prompt and model, which live in the
+ * database precisely so they can be changed here rather than by editing
+ * a file on the server. And it answers the question that used to take a
+ * log dive: when the CRM misbehaves, which of Supabase, 360dialog or
+ * OpenAI is actually at fault?
  *
- * Each row is fetched from api/health.php separately so a dead service
- * cannot hold up the others.
+ * API keys are NOT editable here. They stay in config/config.php, which
+ * the app never writes to.
+ *
+ * Each health row is fetched from api/health.php separately so a dead
+ * service cannot hold up the others.
  */
 
 declare(strict_types=1);
@@ -32,7 +36,7 @@ function asset(string $relativePath): string
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Connection health — LiVAR Packaging CRM</title>
+<title>Settings — LiVAR Packaging CRM</title>
 <meta name="theme-color" content="#FFFFFF" />
 <meta name="robots" content="noindex, nofollow" />
 
@@ -49,13 +53,52 @@ function asset(string $relativePath): string
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         </a>
         <div class="settings__title">
-            <h1>Connection health</h1>
-            <p>Supabase, 360dialog and n8n, checked live.</p>
+            <h1>Settings</h1>
+            <p>AI replies, and the health of Supabase, 360dialog and OpenAI.</p>
         </div>
         <button class="btn btn--primary" id="recheckBtn">Re-check</button>
     </header>
 
     <main class="settings__body">
+
+        <section class="settings__section settings__section--first">
+            <h2>AI replies</h2>
+            <p class="settings__note">
+                What the <strong>Draft</strong> button sends to OpenAI. Saved to the
+                database, so it takes effect immediately — no file to edit, no restart.
+            </p>
+
+            <form class="ai-form" id="aiForm">
+                <div class="field">
+                    <label for="aiModel">Model</label>
+                    <input type="text" id="aiModel" list="aiModelList" autocomplete="off" spellcheck="false" />
+                    <datalist id="aiModelList"></datalist>
+                    <p class="field__help" id="aiModelHelp">
+                        Loaded from your OpenAI account. Any model id is accepted —
+                        pick one that can read images, or photos will be ignored.
+                    </p>
+                </div>
+
+                <div class="field">
+                    <label for="aiPrompt">System prompt</label>
+                    <textarea id="aiPrompt" rows="14" spellcheck="false"></textarea>
+                    <p class="field__help">
+                        Save an empty box to go back to the built-in prompt.
+                    </p>
+                </div>
+
+                <div class="ai-form__actions">
+                    <button type="button" class="btn btn--ghost" id="aiResetBtn">Restore default</button>
+                    <button type="submit" class="btn btn--primary" id="aiSaveBtn">Save</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="settings__section">
+            <h2>Connection health</h2>
+            <p class="settings__note">Checked live, each one independently.</p>
+        </section>
+
         <div class="health-summary" id="healthSummary" hidden></div>
 
         <ul class="health-list" id="healthList"></ul>
@@ -66,18 +109,18 @@ function asset(string $relativePath): string
                 These make real calls, so they are not part of the checks above.
             </p>
             <div class="settings__actions">
-                <button class="btn btn--ghost settings__action" id="n8nLiveBtn">
+                <button class="btn btn--ghost settings__action" id="aiLiveBtn">
                     Run a live draft test
-                    <span class="settings__action-note">Runs the AI agent once — costs a model call</span>
+                    <span class="settings__action-note">Calls OpenAI once — costs a model call</span>
                 </button>
             </div>
-            <div class="health-item health-item--standalone" id="n8nLiveResult" hidden></div>
+            <div class="health-item health-item--standalone" id="aiLiveResult" hidden></div>
         </section>
 
         <p class="settings__footer">
-            Settings are edited in <code>config/config.php</code>, never here.
+            API keys live in <code>config/config.php</code> and are never editable here.
             Detailed errors are in the PHP error log on the
-            <code>[Supabase]</code> and <code>[WhatsApp]</code> lines.
+            <code>[Supabase]</code>, <code>[WhatsApp]</code> and <code>[AI]</code> lines.
             &nbsp;·&nbsp; <a href="login.php?logout=1">Sign out</a>
         </p>
     </main>
