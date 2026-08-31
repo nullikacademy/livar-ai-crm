@@ -41,6 +41,20 @@ final class AI
     private string $baseUrl;
     private string $apiKey;
 
+    /**
+     * Which request dialect each model turned out to want.
+     *
+     * See chat(): OpenAI renamed `max_tokens` to `max_completion_tokens`
+     * and newer models reject the old name outright, while an
+     * OpenAI-compatible endpoint behind a custom OPENAI_BASE_URL may only
+     * know the old one. Rather than keep a model list that goes stale,
+     * the client sends the modern spelling and remembers what the
+     * provider said if it complained.
+     *
+     * @var array<string, array{tokens: string, temperature: bool}>
+     */
+    private array $dialects = [];
+
     private function __construct()
     {
         $key = defined('OPENAI_API_KEY') ? (string) OPENAI_API_KEY : '';
@@ -84,25 +98,114 @@ final class AI
      * $messages is the OpenAI messages array, so a `content` may be a
      * plain string or an array of parts -- which is how images travel.
      *
+     * The token cap is sent as `max_completion_tokens`. `max_tokens` is
+     * the deprecated spelling and the newer models -- the o-series, and
+     * gpt-5 and later -- refuse a request that uses it, which is a hard
+     * 400 rather than a warning. The same models also refuse a
+     * `temperature` other than the default.
+     *
+     * Neither is decided from the model NAME. A hardcoded family list is
+     * exactly the kind of thing that is wrong the week a new model ships,
+     * and OPENAI_BASE_URL can point at an OpenAI-compatible service with
+     * its own rules. Instead the modern spelling goes out first and the
+     * provider's own 400 -- which names the parameter it wants -- is used
+     * to correct the request and retry it. What it said is remembered for
+     * the rest of the request, so a second draft does not pay for the
+     * same lesson twice.
+     *
      * @param array<int, array<string, mixed>> $messages
      */
     public function chat(array $messages, string $model, float $temperature = 0.4, int $maxTokens = 900): string
     {
-        $response = $this->post('/chat/completions', [
-            'model'       => $model,
-            'messages'    => $messages,
-            'temperature' => $temperature,
-            'max_tokens'  => $maxTokens,
-        ], 90);
+        $dialect = $this->dialects[$model] ??= ['tokens' => 'max_completion_tokens', 'temperature' => true];
+
+        // One attempt per thing that can be wrong, plus the real one.
+        for ($attempt = 0; ; $attempt++) {
+            $payload = ['model' => $model, 'messages' => $messages];
+            $payload[$dialect['tokens']] = $maxTokens;
+            if ($dialect['temperature']) {
+                $payload['temperature'] = $temperature;
+            }
+
+            try {
+                $response = $this->post('/chat/completions', $payload, 90);
+                break;
+            } catch (AIException $e) {
+                $corrected = self::correctDialect($dialect, $e);
+                if ($corrected === null || $attempt >= 2) {
+                    throw $e;
+                }
+
+                error_log("[AI] {$model} rejected the request; retrying as "
+                    . json_encode($corrected) . ': ' . $e->getMessage());
+                $dialect = $this->dialects[$model] = $corrected;
+            }
+        }
 
         $text = $response['choices'][0]['message']['content'] ?? '';
 
         if (!is_string($text) || trim($text) === '') {
             error_log('[AI] completion came back empty: ' . json_encode($response));
+
+            // A reasoning model spends the same budget on thinking as on
+            // writing, so it can hit the cap before a single word of the
+            // reply exists. That is a limit to raise, not a fault to
+            // retry, and saying so is the difference between the two.
+            if (($response['choices'][0]['finish_reason'] ?? '') === 'length') {
+                throw new AIException(
+                    'The model used its whole ' . $maxTokens . '-token budget before writing a reply. '
+                    . 'A reasoning model needs a larger one — try a non-reasoning model for drafts.',
+                    502
+                );
+            }
+
             throw new AIException('The AI returned an empty reply.', 502);
         }
 
         return trim($text);
+    }
+
+    /**
+     * Reads a 400 and works out what to send differently next time.
+     *
+     * Returns null when the failure has nothing to do with the dialect --
+     * a bad key, an unknown model, no credit -- so the caller rethrows
+     * instead of retrying something that will fail identically.
+     *
+     * @param array{tokens: string, temperature: bool} $dialect
+     * @return array{tokens: string, temperature: bool}|null
+     */
+    private static function correctDialect(array $dialect, AIException $e): ?array
+    {
+        if ($e->httpStatus !== 400) {
+            return null;
+        }
+
+        $message = strtolower($e->getMessage());
+
+        // "Unsupported parameter: 'max_completion_tokens' ..." from an
+        // older or third-party endpoint that only knows the legacy name.
+        if ($dialect['tokens'] === 'max_completion_tokens' && str_contains($message, 'max_completion_tokens')) {
+            $dialect['tokens'] = 'max_tokens';
+            return $dialect;
+        }
+
+        // "... 'max_tokens' is not supported with this model. Use
+        // 'max_completion_tokens' instead." -- the case this whole dance
+        // exists for, reachable after the fallback above guessed wrong.
+        if ($dialect['tokens'] === 'max_tokens' && str_contains($message, 'max_completion_tokens')) {
+            $dialect['tokens'] = 'max_completion_tokens';
+            return $dialect;
+        }
+
+        // "Unsupported value: 'temperature' does not support 0.4 with
+        // this model. Only the default (1) value is supported."
+        if ($dialect['temperature'] && str_contains($message, 'temperature')) {
+            $dialect['temperature'] = false;
+            return $dialect;
+        }
+
+        return null;
     }
 
     /**

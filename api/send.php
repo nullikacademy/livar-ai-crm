@@ -5,11 +5,14 @@
  *   POST /api/send.php
  *   {
  *     "session_id": "wa_34600111222",
- *     "type": "text" | "image" | "video" | "document" | "location",
+ *     "type": "text" | "image" | "video" | "document" | "location"
+ *           | "template" | "buttons" | "catalog",
  *     "text": "...",                 // text body, or a caption for media
  *     "media_ref": "...",            // from api/upload.php
  *     "latitude": 41.3874, "longitude": 2.1686,
- *     "place_name": "...", "place_address": "..."
+ *     "place_name": "...", "place_address": "...",
+ *     "template": "order_update", "language": "en", "params": ["..."],
+ *     "buttons": ["Yes", "No"]
  *   }
  *
  * Delivers a message over WhatsApp and records it. This is the endpoint
@@ -51,9 +54,10 @@ try {
         json_error('This customer has no WhatsApp number, so there is nothing to send to.', 422);
     }
 
-    // The window is enforced here, not just shown in the UI. Sending
-    // outside it needs an approved template, which this CRM does not do.
-    if (!isWithin24hWindow($customer['last_inbound_at'] ?? null)) {
+    // The window is enforced here, not just shown in the UI. A template
+    // is the one thing WhatsApp still carries once it has closed, and is
+    // therefore the one type that skips this check.
+    if ($type !== 'template' && !isWithin24hWindow($customer['last_inbound_at'] ?? null)) {
         json_error(
             'The 24-hour reply window has closed. WhatsApp only allows a free-form reply within '
             . 'a day of the customer\'s last message; after that an approved template is required.',
@@ -64,6 +68,9 @@ try {
     $result = match ($type) {
         'text'     => sendTextMessage($waId, $sessionId, $text),
         'location' => sendLocationMessage($waId, $sessionId, $data),
+        'template' => sendTemplateMessage($waId, $sessionId, $data),
+        'buttons'  => sendButtonsMessage($waId, $sessionId, $text, $data),
+        'catalog'  => sendCatalogMessage($waId, $sessionId, $text),
         default    => sendMediaMessage($waId, $sessionId, $type, $text, input_str($data, 'media_ref')),
     };
 
@@ -134,6 +141,167 @@ function sendLocationMessage(string $waId, string $sessionId, array $data): arra
         'longitude'     => $lng,
         'place_name'    => $name,
         'place_address' => $address,
+        'wa_message_id' => WhatsApp::messageIdFrom($response),
+    ]);
+}
+
+/**
+ * Sends an approved template.
+ *
+ * This is the only path that reaches a customer whose 24-hour window has
+ * closed. What gets STORED is the template rendered with the values the
+ * agent typed, not the raw "Hi {{1}}" -- the thread has to show what the
+ * customer actually received, or the next agent to open it is reading a
+ * different conversation than the one that happened.
+ *
+ * @param array<string, mixed> $data
+ * @return array<string, mixed>
+ */
+function sendTemplateMessage(string $waId, string $sessionId, array $data): array
+{
+    $name     = input_str($data, 'template');
+    $language = input_str($data, 'language');
+
+    if ($name === '' || $language === '') {
+        json_error('Pick a template and its language first.', 422);
+    }
+
+    $params = [];
+    foreach (($data['params'] ?? []) as $value) {
+        if (!is_string($value) && !is_numeric($value)) {
+            json_error('Template values must be text.', 422);
+        }
+        $value = trim((string) $value);
+        if ($value === '') {
+            json_error('Fill in every value the template asks for.', 422);
+        }
+        // A newline or a tab in a parameter is rejected by Meta, and a
+        // four-character tab is not worth a failed send.
+        $params[] = preg_replace('/\s+/u', ' ', $value) ?? $value;
+    }
+
+    $response = WhatsApp::client()->sendTemplate($waId, $name, $language, $params);
+
+    // The preview the picker built, which is what the customer will see.
+    // Bounded: it is text from the client, and a chat row is not the
+    // place to discover that.
+    $rendered = renderTemplateBody(mb_substr(input_str($data, 'body'), 0, 2000), $params);
+    if ($rendered === '') {
+        // No preview came from the picker: record enough that the thread
+        // is not a blank bubble.
+        $rendered = '[template: ' . $name . ']';
+    }
+
+    return storeOutbound($sessionId, [
+        'msg_type'      => 'template',
+        'content'       => $rendered,
+        'wa_template'   => $name,
+        'wa_message_id' => WhatsApp::messageIdFrom($response),
+    ]);
+}
+
+/**
+ * Substitutes {{1}}, {{2}} ... into a template body for the record.
+ *
+ * The body text comes from the picker, which got it from
+ * api/templates.php, which got it from Meta -- so this is only ever
+ * re-rendering something the provider already approved.
+ *
+ * @param array<int, string> $params
+ */
+function renderTemplateBody(string $body, array $params): string
+{
+    if ($body === '') {
+        return '';
+    }
+
+    foreach ($params as $index => $value) {
+        $body = str_replace(['{{' . ($index + 1) . '}}', '{{ ' . ($index + 1) . ' }}'], $value, $body);
+    }
+
+    return trim($body);
+}
+
+/**
+ * Asks a question the customer can answer by tapping.
+ *
+ * The tap comes back on the webhook as an `interactive` message, so the
+ * answer lands in the thread as a normal inbound row -- which is the
+ * point: a tapped button is an answer the CRM can read, where "sure, the
+ * 500ml one I think" is a sentence somebody has to interpret.
+ *
+ * @param array<string, mixed> $data
+ * @return array<string, mixed>
+ */
+function sendButtonsMessage(string $waId, string $sessionId, string $text, array $data): array
+{
+    if ($text === '') {
+        json_error('Write the question first.', 422);
+    }
+
+    $buttons = [];
+    foreach (($data['buttons'] ?? []) as $label) {
+        if (!is_string($label)) {
+            json_error('Each answer button must be text.', 422);
+        }
+        $label = trim($label);
+        if ($label !== '') {
+            $buttons[] = $label;
+        }
+    }
+
+    if (!$buttons) {
+        json_error('Add at least one answer button.', 422);
+    }
+
+    $response = WhatsApp::client()->sendButtons($waId, $text, $buttons, input_str($data, 'footer'));
+
+    return storeOutbound($sessionId, [
+        'msg_type'      => 'buttons',
+        'content'       => $text,
+        'wa_buttons'    => json_encode($buttons, JSON_UNESCAPED_UNICODE),
+        'wa_message_id' => WhatsApp::messageIdFrom($response),
+    ]);
+}
+
+/**
+ * Sends the catalog uploaded on the settings page.
+ *
+ * One file for the whole business, so this takes no reference from the
+ * browser at all: the agent presses a button and the server sends
+ * whatever is currently configured. Nothing about which file that is
+ * comes from the request.
+ *
+ * @return array<string, mixed>
+ */
+function sendCatalogMessage(string $waId, string $sessionId, string $caption): array
+{
+    $catalog = getCatalogFile();
+    if ($catalog === null) {
+        json_error(
+            'No catalog has been uploaded yet. Add one on the settings page and it will be one click from here.',
+            422
+        );
+    }
+
+    $sendType = media_msg_type_for_mime($catalog['mime']);
+
+    $mediaId  = WhatsApp::client()->uploadMedia($catalog['abs'], $catalog['mime']);
+    $response = WhatsApp::client()->sendMedia(
+        $waId,
+        $sendType,
+        $mediaId,
+        $caption,
+        $sendType === 'document' ? $catalog['name'] : ''
+    );
+
+    return storeOutbound($sessionId, [
+        'msg_type'      => $sendType,
+        'content'       => $caption,
+        'media_path'    => $catalog['path'],
+        'media_mime'    => $catalog['mime'],
+        'media_size'    => $catalog['size'],
+        'media_name'    => $catalog['name'],
         'wa_message_id' => WhatsApp::messageIdFrom($response),
     ]);
 }
@@ -281,6 +449,8 @@ function storeOutbound(string $sessionId, array $fields): array
         'media_mime'    => $fields['media_mime'] ?? null,
         'media_size'    => isset($fields['media_size']) ? (int) $fields['media_size'] : null,
         'media_name'    => $fields['media_name'] ?? null,
+        'buttons'       => decodeButtonLabels($fields['wa_buttons'] ?? null),
+        'wa_template'   => $fields['wa_template'] ?? null,
         'latitude'      => $fields['latitude'] ?? null,
         'longitude'     => $fields['longitude'] ?? null,
         'place_name'    => $fields['place_name'] ?? null,

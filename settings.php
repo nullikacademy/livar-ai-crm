@@ -96,6 +96,25 @@ function asset(string $relativePath): string
         </section>
 
         <section class="settings__section">
+            <h2>Catalog</h2>
+            <p class="settings__note">
+                One file for the whole business. Upload it here and it is one tap
+                away in every conversation — always this version, never whatever
+                copy happened to be on someone's laptop.
+            </p>
+
+            <div class="catalog" id="catalogBox">
+                <div class="catalog__info" id="catalogInfo">Loading…</div>
+                <div class="catalog__actions">
+                    <button type="button" class="btn btn--ghost" id="catalogPickBtn">Upload a file</button>
+                    <a class="btn-link" id="catalogViewLink" href="api/catalog.php?file=1" target="_blank" rel="noopener noreferrer" hidden>Open</a>
+                    <button type="button" class="btn-link btn-link--danger" id="catalogRemoveBtn" hidden>Remove</button>
+                </div>
+                <input type="file" id="catalogInput" hidden />
+            </div>
+        </section>
+
+        <section class="settings__section">
             <h2>Connection health</h2>
             <p class="settings__note">Checked live, each one independently.</p>
         </section>

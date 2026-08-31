@@ -47,8 +47,34 @@ README** — the template stays placeholders-only.
   They live in `livar_settings` so the settings page can change them;
   `SETTING_DEFAULTS` in `db_functions.php` holds the fallbacks. API keys
   stay in `config/config.php`, which the app must never write to. Any new
-  editable setting needs a key in `SETTING_DEFAULTS` — `api/settings.php`
-  refuses to read or write anything not declared there.
+  setting needs a key in `SETTING_DEFAULTS` — `api/settings.php` refuses
+  to read or write anything not declared there — and, separately, a place
+  in `SETTING_AGENT_EDITABLE` if it may be written from a JSON body.
+  `catalog_path` is in the first list and not the second, because it is a
+  location inside `storage/`: an endpoint that took it from a request
+  would be letting the browser name a file for `api/send.php` to open.
+  It is written by `api/catalog.php`, which takes bytes instead.
+- **Never send `max_tokens` to OpenAI, and never branch on a model name.**
+  `max_tokens` is the deprecated spelling and the newer models reject it
+  outright. `AI::chat()` sends `max_completion_tokens`, and when a
+  provider objects it reads the parameter out of the provider's own 400
+  and retries corrected (same for a refused `temperature`), remembering
+  the answer for the rest of the request. A hardcoded list of model
+  families would be wrong the week a new one ships, and `OPENAI_BASE_URL`
+  may not even be OpenAI.
+- **A path on disk never comes from the browser.** `avatar_path` and
+  `catalog_path` are both written only by the endpoint that stored the
+  bytes, and neither is in `CUSTOMER_PROFILE_FIELDS` or
+  `SETTING_AGENT_EDITABLE`. `customerForBrowser()` swaps `avatar_path`
+  for an `api/avatar.php` URL on the way out, so it never leaves the
+  server at all.
+- **A customer's country is derived, not stored — except once.**
+  `config/countries.php` maps a dialling prefix to a country on every
+  read, so old rows get a flag without a migration and fixing a number
+  fixes the flag. The `country` *column* is written only on the webhook's
+  first-contact insert, and is an agent's to edit after that: a number
+  can be a roaming SIM, and a prefix table must not overwrite what a
+  person knows.
 - **Photos reach the model two ways.** The most recent `DRAFT_IMAGE_LIMIT`
   photos are attached as real images; every photo also gets a one-line
   `ai_caption` on arrival, used for the sidebar preview and for older
@@ -59,10 +85,17 @@ README** — the template stays placeholders-only.
   unguessable token in its own URL, compared with `hash_equals()`, and
   answers 404 on a mismatch. Any new `/api` route needs the auth guard.
 - **Media is never served from disk.** `storage/` is denied by Apache;
-  `api/media.php` is the only reader, and it resolves paths through
-  `realpath()` and asserts they sit inside the media root. Filenames are
+  `api/media.php` and `api/avatar.php` are the only readers, both through
+  `media_stream()`, and every path is resolved with `media_abs_path()`,
+  which asserts it sits inside the media root. Filenames are
   server-generated hex and extensions come from a mime allowlist — never
-  from anything a sender supplied.
+  from anything a sender supplied. A new endpoint that serves bytes uses
+  `media_stream()` rather than writing the headers again.
+- **Sending outside the 24-hour window is templates only.**
+  `api/send.php` enforces the window for every type except `template`,
+  which is the one thing WhatsApp still delivers. A template row stores
+  the message with its placeholders already filled in — what the customer
+  received — not the raw `Hi {{1}}`.
 - **`api/health.php` reports failures instead of raising them.** It is the
   one place that turns a broken dependency into a description rather than
   an exception, so its checks must be honest: an unproven check is `warn`,
@@ -95,7 +128,10 @@ README** — the template stays placeholders-only.
 
 - **Never interpolate a URL into an HTML string.** `escapeHtml()` does
   not escape quotes, so attribute interpolation is injectable. Set every
-  `src`/`href` through a DOM property (`img.src = url`).
+  `src`/`href` through a DOM property (`img.src = url`). The same goes
+  for any other attribute carrying data — a `title`, for instance: that
+  is why `paintAvatar()` and `paintName()` exist rather than a longer
+  template literal in `buildCustomerItem()`.
 - Poll with `appendMessages()`, not `renderMessages()`. The latter is a
   full teardown and rebuild, which re-requests and re-flashes every
   image on each 8s tick; keep it for conversation switches.

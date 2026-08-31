@@ -52,7 +52,10 @@ try {
         json_error('That file is no longer available.', 404);
     }
 
-    stream_media($abs, (string) ($row['media_mime'] ?? ''), (string) ($row['media_name'] ?? ''));
+    // media_stream() lives in config/media.php: api/avatar.php serves
+    // bytes out of the same store, and the headers that make that safe
+    // are written once.
+    media_stream($abs, (string) ($row['media_mime'] ?? ''), (string) ($row['media_name'] ?? ''));
 } catch (WhatsAppException $e) {
     error_log('[api/media] ' . $e->getMessage());
     json_error('That file could not be loaded from WhatsApp.', 502);
@@ -88,60 +91,3 @@ function fetch_media_now(array $row): ?string
     return $saved['abs'];
 }
 
-/**
- * Streams a file with the stored mime type.
- *
- * nosniff matters here more than anywhere else in the app: these bytes
- * came from a stranger's phone, and without it a browser could decide a
- * "photo" is really HTML and run it on our origin.
- */
-function stream_media(string $abs, string $mime, string $name): void
-{
-    $mime = media_normalize_mime($mime);
-    if ($mime === '' || media_ext_for_mime($mime) === null) {
-        $mime = 'application/octet-stream';
-    }
-
-    $size  = (int) filesize($abs);
-    $etag  = '"' . md5($abs . '|' . $size . '|' . (string) filemtime($abs)) . '"';
-
-    if (($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $etag) {
-        http_response_code(304);
-        header('ETag: ' . $etag);
-        exit;
-    }
-
-    header('Content-Type: ' . $mime);
-    header('Content-Length: ' . $size);
-    header('X-Content-Type-Options: nosniff');
-    header('Content-Security-Policy: default-src \'none\'; sandbox');
-    header('ETag: ' . $etag);
-    // The bytes behind an id never change, so this can cache hard. It is
-    // private: the response is only valid for this signed-in agent.
-    header('Cache-Control: private, max-age=31536000, immutable');
-    header('Content-Disposition: inline' . (($name !== '') ? '; filename="' . media_safe_filename($name) . '"' : ''));
-
-    // Stream rather than file_get_contents: a 16 MB video should not have
-    // to fit in PHP's memory limit.
-    $fh = fopen($abs, 'rb');
-    if ($fh === false) {
-        json_error('That file could not be read.', 500);
-    }
-    fpassthru($fh);
-    fclose($fh);
-    exit;
-}
-
-/**
- * Makes a sender-supplied filename safe to put in a header.
- *
- * Only used for the download name -- it never touches the path on disk,
- * which is always server-generated hex.
- */
-function media_safe_filename(string $name): string
-{
-    $name = str_replace(["\r", "\n", '"', '\\'], '', $name);
-    $name = preg_replace('#[/\\\\]#', '_', $name) ?? '';
-    $name = trim($name);
-    return $name === '' ? 'file' : mb_substr($name, 0, 120);
-}

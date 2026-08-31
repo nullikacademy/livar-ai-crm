@@ -13,6 +13,21 @@
         <input type="hidden" id="field_session_id" name="session_id" />
 
         <!--
+            Profile photo. WhatsApp does not give out a contact's own
+            picture, so this is one an agent sets; with none, the avatar
+            falls back to initials exactly as it always has.
+        -->
+        <div class="details-photo">
+            <span class="avatar avatar--xl" id="detailsAvatar">?</span>
+            <div class="details-photo__actions">
+                <button type="button" class="btn btn--ghost btn--sm" id="avatarPickBtn">Change photo</button>
+                <button type="button" class="btn-link btn-link--danger" id="avatarRemoveBtn" hidden>Remove</button>
+                <p class="details-photo__hint" id="avatarHint">JPEG, PNG, WebP or GIF, up to 5 MB.</p>
+            </div>
+            <input type="file" id="avatarInput" accept="image/*" hidden />
+        </div>
+
+        <!--
             The name the customer uses on WhatsApp. Read-only: it belongs
             to their account, not to us. Shown here because it is what the
             chat header displays when nobody has typed a name yet, which
@@ -42,6 +57,21 @@
             <input type="text" id="field_username" name="username" autocomplete="off" />
         </div>
 
+        <!--
+            A closed set, not free text: the point of the label is to be
+            able to tell first contacts apart at a glance, and that stops
+            working the moment "New" and "new customer" are two labels.
+            A number the webhook has just met starts as New.
+        -->
+        <div class="field">
+            <label for="field_label">Label</label>
+            <select id="field_label" name="label">
+                <option value="">No label</option>
+                <option value="new">New customer</option>
+                <option value="old">Old customer</option>
+            </select>
+        </div>
+
         <div class="details-form__row details-form__row--2">
             <div class="field">
                 <label for="field_phone">Phone</label>
@@ -54,9 +84,17 @@
         </div>
 
         <div class="details-form__row details-form__row--2">
+            <!--
+                The country is also worked out from the dialling prefix
+                on every read (see config/countries.php) and shown beside
+                the field. The field itself stays editable and always
+                wins: a number can be a roaming SIM or a virtual line,
+                and a prefix table must not overwrite what an agent knows.
+            -->
             <div class="field">
                 <label for="field_country">Country</label>
                 <input type="text" id="field_country" name="country" autocomplete="off" />
+                <p class="field__help field__help--inline" id="countryDetected" hidden></p>
             </div>
             <div class="field">
                 <label for="field_city">City</label>

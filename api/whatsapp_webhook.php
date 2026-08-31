@@ -248,20 +248,36 @@ function extract_message_fields(array $message): array
                 'place_address' => (string) ($loc['address'] ?? ''),
             ];
 
+        // A tap on a quick-reply button under a template we sent.
         case 'button':
+            $button = is_array($message['button'] ?? null) ? $message['button'] : [];
             return [
                 'direction' => 'in',
-                'msg_type'  => 'text',
-                'content'   => (string) ($message['button']['text'] ?? ''),
+                'msg_type'  => 'reply',
+                // `payload` is the button's configured value and `text`
+                // is what the customer saw. The text is what belongs in
+                // the thread; the payload only matters to whoever built
+                // the template, and is identical often enough that
+                // showing both would just read as a stutter.
+                'content'   => (string) ($button['text'] ?? $button['payload'] ?? ''),
             ];
 
+        // A tap on a button or list option from an interactive message
+        // -- the answer to a question the CRM asked. See sendButtons()
+        // in config/whatsapp.php.
         case 'interactive':
-            $i = is_array($message['interactive'] ?? null) ? $message['interactive'] : [];
-            $title = $i['button_reply']['title'] ?? $i['list_reply']['title'] ?? '';
+            $i     = is_array($message['interactive'] ?? null) ? $message['interactive'] : [];
+            $reply = $i['button_reply'] ?? $i['list_reply'] ?? [];
+            $title = is_array($reply) ? (string) ($reply['title'] ?? '') : '';
+            // A list option can carry a description under its title; it
+            // is part of what the customer chose, so it is part of the
+            // answer.
+            $note  = is_array($reply) ? trim((string) ($reply['description'] ?? '')) : '';
+
             return [
                 'direction' => 'in',
-                'msg_type'  => 'text',
-                'content'   => (string) $title,
+                'msg_type'  => 'reply',
+                'content'   => $note !== '' ? $title . ' — ' . $note : $title,
             ];
 
         default:

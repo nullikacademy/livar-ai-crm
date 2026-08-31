@@ -51,7 +51,7 @@ function handleGet(): void
         if (!$customer) {
             json_error('Customer not found', 404);
         }
-        json_response(['success' => true, 'customer' => $customer]);
+        json_response(['success' => true, 'customer' => customerForBrowser($customer)]);
         return;
     }
 
@@ -63,7 +63,9 @@ function handleGet(): void
 
     json_response([
         'success'  => true,
-        'customers' => $result['rows'],
+        // customerForBrowser() swaps avatar_path -- a location inside
+        // storage/ -- for a URL, and derives the country from the number.
+        'customers' => array_map('customerForBrowser', $result['rows']),
         'hasMore'  => $result['hasMore'],
         'nextOffset' => $offset + count($result['rows']),
     ]);
@@ -84,9 +86,10 @@ function handleCreate(): void
         'address'    => input_str($data, 'address'),
         'tax_id'     => input_str($data, 'tax_id'),
         'details'    => input_str($data, 'details'),
+        'label'      => input_str($data, 'label'),
     ]);
 
-    json_response(['success' => true, 'customer' => $customer], 201);
+    json_response(['success' => true, 'customer' => customerForBrowser($customer)], 201);
 }
 
 function handleUpdate(): void
@@ -104,5 +107,5 @@ function handleUpdate(): void
         json_error('Customer not found', 404);
     }
 
-    json_response(['success' => true, 'customer' => $customer]);
+    json_response(['success' => true, 'customer' => customerForBrowser($customer)]);
 }
