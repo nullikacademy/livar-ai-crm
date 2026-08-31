@@ -156,7 +156,44 @@ To check it works, send a WhatsApp message to your business number. A
 customer should appear in the sidebar within a few seconds. If not, check
 your PHP error log for lines starting with `[WhatsApp]`.
 
-## 2b. Updating an existing install
+## 2b. Pointing the server at `main`
+
+Only needed once, if the server was set up before `main` existed and is
+still checked out on a feature branch. **Do it before deleting the old
+branches** — a server tracking a branch that no longer exists on the
+remote fails its next pull with `couldn't find remote ref`, and you find
+out at the worst moment.
+
+Over SSH, or cPanel → **Terminal**:
+
+```bash
+cd /path/to/your/crm          # on cPanel: public_html, or the subdomain folder
+git remote -v                 # confirm it points at this repo
+git branch                    # what it is on now
+git fetch origin
+git checkout main             # first time: git checkout -b main origin/main
+git branch --set-upstream-to=origin/main main
+```
+
+`config/config.php` and `storage/media/` are gitignored, so switching
+branches never touches your keys or your customers' media. If the
+checkout refuses because of local edits to *tracked* files, `git status`
+will name them — on a server those are almost always accidental, and
+`git checkout -- <file>` discards them.
+
+On cPanel with no shell, the **Git™ Version Control** page has a *Manage*
+→ *Pull or Deploy* button, and the checked-out branch can be changed
+there. If the site was deployed by uploading a zip rather than by
+cloning, there is no branch to switch: keep a copy of
+`config/config.php`, upload the new zip, and put the file back.
+
+Confirm it worked on the settings page — the footer names the branch:
+
+```
+LiVAR Packaging CRM   v1.2.0 · 7a30d2f (main) · deployed 31 Aug 2026 20:26 UTC
+```
+
+## 2c. Updating an existing install
 
 Two steps, in this order. Your `config/config.php` is gitignored, so a
 pull never touches it.
@@ -177,10 +214,10 @@ If you deploy by uploading a zip rather than with git, keep a copy of
 schema the same way.
 
 **Check it landed:** open the settings page (gear icon) and look at the
-footer. It shows the version and the commit git actually has checked out,
-which is the one thing that can tell you whether the pull worked without
-opening a shell. If the version there hasn't moved, the new code is not
-running.
+footer. It shows the version, and the branch and commit git actually has
+checked out — which is the one thing that can tell you whether the pull
+worked without opening a shell. If the version there hasn't moved, the
+new code is not running; if the branch is not `main`, see 2b above.
 
 Nothing else is needed — there is no build step, no dependency install
 and no service to restart. `asset()` cache-busts the CSS and JS on
