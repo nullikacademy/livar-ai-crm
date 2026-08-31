@@ -169,6 +169,24 @@ create table if not exists public.livar_settings (
     updated_at timestamptz not null default now()
 );
 
+-- Lock the tables to the service_role -------------------------------------
+-- Everything above is reachable through PostgREST, which means anyone
+-- holding the project's ANON key could otherwise read and write it --
+-- and between them these tables hold every customer's name, number and
+-- entire conversation.
+--
+-- No policies are created, deliberately. The CRM authenticates with the
+-- service_role key, which bypasses RLS completely, so this closes the
+-- tables to the outside world without restricting the app at all. If you
+-- later want a Supabase client library to read these with the anon key,
+-- that is the point at which to write a policy.
+--
+-- Safe to re-run: enabling RLS on a table that already has it is a no-op.
+alter table public.livar_customer   enable row level security;
+alter table public.n8n_chat_history enable row level security;
+alter table public.livar_wa_contact enable row level security;
+alter table public.livar_settings   enable row level security;
+
 -- ============================================================================
 -- RPC function used by the CRM's REST-based data layer (config/db_functions.php)
 -- Combines the customer list + each one's most recent chat message in a
