@@ -106,7 +106,10 @@ try {
  */
 function detectMime(string $path): string
 {
-    if (function_exists('finfo_open')) {
+    // All three are checked, not just finfo_open: disable_functions works
+    // per function, so guarding one while calling the others turns a
+    // hardened host into a fatal error.
+    if (function_exists('finfo_open') && function_exists('finfo_file') && function_exists('finfo_close')) {
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
         if ($finfo !== false) {
             $detected = finfo_file($finfo, $path);

@@ -219,8 +219,9 @@ function resolveMediaRef(string $ref): ?array
         }
     }
 
-    // Trust the file itself over anything recorded beside it.
-    if (function_exists('finfo_open')) {
+    // Trust the file itself over anything recorded beside it. All three
+    // functions are checked because disable_functions works per function.
+    if (function_exists('finfo_open') && function_exists('finfo_file') && function_exists('finfo_close')) {
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
         if ($finfo !== false) {
             $detected = finfo_file($finfo, $abs);

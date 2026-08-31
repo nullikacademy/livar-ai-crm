@@ -664,36 +664,76 @@ function checkStorage(): array
  */
 function storageContext(string $path): array
 {
-    $user = function_exists('posix_geteuid')
-        ? (posix_getpwuid(posix_geteuid())['name'] ?? (string) posix_geteuid())
-        : (get_current_user() ?: 'unknown');
+    $lines = ['Path: ' . $path];
 
-    $lines = ['Path: ' . $path, 'PHP runs as: ' . $user];
-
-    if (is_dir($path)) {
-        $owner = function_exists('posix_getpwuid')
-            ? (posix_getpwuid(fileowner($path))['name'] ?? (string) fileowner($path))
-            : (string) fileowner($path);
-        $lines[] = 'Directory owner: ' . $owner . ' · mode ' . substr(sprintf('%o', fileperms($path)), -4);
-    }
-
-    $baseDir = ini_get('open_basedir');
-    if (is_string($baseDir) && $baseDir !== '') {
-        $lines[] = 'open_basedir is set: ' . $baseDir;
-    }
-
-    // Managed hosts routinely put disk_free_space() in disable_functions,
-    // and in PHP 8 a disabled function is an undefined one -- it throws an
-    // Error that @ does not suppress. Every optional call in a health
-    // check needs this guard, or the diagnostic becomes the outage.
-    if (function_exists('disk_free_space')) {
-        $free = @disk_free_space($path);
-        if (is_float($free) && $free < 52428800) {
-            $lines[] = 'Only ' . humanSize((int) $free) . ' free on this filesystem.';
+    // Every fact below is optional and gathered independently. A host
+    // that disables one function must not cost us the others -- and must
+    // never crash the check whose whole purpose is explaining a problem.
+    foreach ([
+        static fn(): string => 'PHP runs as: ' . currentUserName(),
+        static fn(): string => is_dir($path)
+            ? 'Directory owner: ' . uidName(fileowner($path))
+              . ' · mode ' . substr(sprintf('%o', fileperms($path)), -4)
+            : '',
+        static function () : string {
+            $baseDir = ini_get('open_basedir');
+            return (is_string($baseDir) && $baseDir !== '') ? 'open_basedir is set: ' . $baseDir : '';
+        },
+        static function () use ($path): string {
+            if (!function_exists('disk_free_space')) {
+                return '';
+            }
+            $free = disk_free_space($path);
+            return (is_float($free) && $free < 52428800)
+                ? 'Only ' . humanSize((int) $free) . ' free on this filesystem.'
+                : '';
+        },
+    ] as $fact) {
+        try {
+            $line = $fact();
+            if ($line !== '') {
+                $lines[] = $line;
+            }
+        } catch (Throwable $e) {
+            // Losing one fact is fine; losing the diagnosis is not.
+            error_log('[api/health] could not gather a storage fact: ' . $e->getMessage());
         }
     }
 
     return $lines;
+}
+
+/**
+ * Resolves a numeric uid to a username, falling back to the number.
+ *
+ * posix_getpwuid() is guarded separately from posix_geteuid(): hosts
+ * disable them individually, and guarding on one while calling the other
+ * is exactly the bug this replaced.
+ */
+function uidName(int|false $uid): string
+{
+    if ($uid === false) {
+        return 'unknown';
+    }
+    if (function_exists('posix_getpwuid')) {
+        $entry = posix_getpwuid($uid);
+        if (is_array($entry) && !empty($entry['name'])) {
+            return (string) $entry['name'];
+        }
+    }
+    return 'uid ' . $uid;
+}
+
+/**
+ * The user this PHP process is running as.
+ */
+function currentUserName(): string
+{
+    if (function_exists('posix_geteuid')) {
+        return uidName(posix_geteuid());
+    }
+    $name = get_current_user();
+    return $name !== '' ? $name : 'unknown';
 }
 
 /**
