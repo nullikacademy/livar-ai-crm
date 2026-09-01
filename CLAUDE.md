@@ -170,6 +170,20 @@ README** — the template stays placeholders-only.
   for any other attribute carrying data — a `title`, for instance: that
   is why `paintAvatar()` and `paintName()` exist rather than a longer
   template literal in `buildCustomerItem()`.
+- **WhatsApp emphasis is rendered, not shown raw** — `renderWhatsAppText()`
+  turns `*bold*`, `_italic_`, `~strike~` and ```mono``` into elements, so
+  the thread reads the way the customer's phone does. It builds nodes and
+  never an HTML string. **No regex lookbehind in frontend code**: Safari
+  gained it only in 16.4 and an unsupported group in a regex *literal* is
+  a parse error that takes the whole file down, not just the feature.
+  Requiring a non-space at both edges is what keeps `2 * 3` literal.
+- **Unread is `last_read_at` versus inbound rows only.** A message we
+  sent is never unread. The time is stamped server-side by
+  `api/read.php`; `last_read_at` is not in `CUSTOMER_PROFILE_FIELDS`, so
+  the details form cannot write it. Adding it backfills existing rows as
+  read exactly once, inside a `do $$` guard — with plain
+  `add column if not exists` every conversation would badge on upgrade,
+  and a re-run would wipe genuine unread state.
 - Poll with `appendMessages()`, not `renderMessages()`. The latter is a
   full teardown and rebuild, which re-requests and re-flashes every
   image on each 8s tick; keep it for conversation switches.

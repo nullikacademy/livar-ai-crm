@@ -45,6 +45,27 @@ alter table public.livar_customer
     -- agent typed here. Never overwrites those.
     add column if not exists wa_contact_name text;
 
+-- When an agent last opened this conversation. Anything inbound after
+-- it is unread, and drives the badge in the sidebar.
+--
+-- Added inside a DO block rather than with `add column if not exists`
+-- because of the backfill: without it every existing conversation would
+-- light up unread the moment this ships, which is noise, not news. The
+-- guard makes the backfill run exactly once -- on the install that
+-- creates the column -- and never again on a re-run.
+do $$
+begin
+    if not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public'
+          and table_name   = 'livar_customer'
+          and column_name  = 'last_read_at'
+    ) then
+        alter table public.livar_customer add column last_read_at timestamptz;
+        update public.livar_customer set last_read_at = now();
+    end if;
+end $$;
+
 create index if not exists idx_livar_customer_session_id on public.livar_customer (session_id);
 create index if not exists idx_livar_customer_created_at on public.livar_customer (created_at desc);
 -- Speeds up the sidebar search (first/last name, username, phone, email).
@@ -232,6 +253,9 @@ returns table (
     avatar_path        text,
     label              text,
     wa_contact_name    text,
+    -- Inbound messages the agent has not seen. Counted here rather than
+    -- fetched per row afterwards, for the same reason the preview is.
+    unread_count       bigint,
     last_message       text,
     last_message_type  text,
     last_activity_id   bigint,
@@ -260,6 +284,16 @@ as $$
         f.id, f.created_at, f.session_id, f.first_name, f.last_name, f.username,
         f.phone, f.country, f.email, f.city, f.address, f.tax_id, f.details,
         f.wa_id, f.wa_profile_name, f.last_inbound_at, f.avatar_path, f.label, f.wa_contact_name,
+        -- Only INBOUND rows count: a reply we sent is not something to
+        -- catch up on. A conversation never opened has last_read_at null,
+        -- which the schema backfills on install so only genuinely new
+        -- traffic badges.
+        (select count(*)
+           from public.n8n_chat_history u
+          where u.session_id = f.session_id
+            and u.direction  = 'in'
+            and (f.last_read_at is null or u.created_at > f.last_read_at)
+        )                                          as unread_count,
         -- A photo must not read as "No messages yet" in the sidebar, so
         -- media rows get a short label instead of their (empty) content.
         case lm.msg_type

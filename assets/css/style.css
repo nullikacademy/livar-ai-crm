@@ -353,6 +353,39 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 
 .customer-item__body { flex: 1; min-width: 0; }
 
+/* The preview line, with room for the unread badge on the right. */
+.customer-item__bottom {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.customer-item__bottom .customer-item__preview { flex: 1; min-width: 0; }
+
+/* Unread count. Sized from the text so a three-character "99+" stays a
+   rounded pill rather than bursting out of a fixed circle. */
+.unread-badge {
+    flex-shrink: 0;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-full);
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+}
+
+/* An unread row leans on weight and ink, not colour, so it still reads
+   as unread for anyone who cannot tell the orange badge from the grey. */
+.customer-item.is-unread .customer-item__name { font-weight: 700; }
+.customer-item.is-unread .customer-item__preview { color: var(--ink); font-weight: 500; }
+.customer-item.is-unread .customer-item__time { color: var(--accent-active); font-weight: 600; }
+
 .customer-item__top {
     display: flex;
     align-items: baseline;
@@ -688,6 +721,25 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     color: var(--ink-3);
 }
 .bubble--ours .bubble__unsupported { color: rgba(255, 255, 255, 0.8); }
+
+/* WhatsApp's emphasis, rendered the way the customer's phone renders it
+   rather than left as the raw *asterisks* an agent would otherwise read. */
+.bubble__text strong,
+.bubble__caption strong { font-weight: 700; }
+.bubble__text em,
+.bubble__caption em { font-style: italic; }
+.bubble__text del,
+.bubble__caption del { text-decoration: line-through; opacity: 0.75; }
+.bubble__text code,
+.bubble__caption code {
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 0.92em;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: rgba(16, 16, 20, 0.07);
+}
+.bubble--ours .bubble__text code,
+.bubble--ours .bubble__caption code { background: rgba(255, 255, 255, 0.18); }
 
 /* Links inside a text bubble. */
 .bubble__link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }

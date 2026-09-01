@@ -613,6 +613,29 @@ function getWaContactName(string $waId): ?string
 }
 
 /**
+ * Marks a conversation as read, up to now.
+ *
+ * Its own function rather than a field on the details form, for the same
+ * reason last_inbound_at is: it is not a profile fact an agent types, it
+ * is a record of something that happened. api/read.php is the only
+ * caller, and it stamps the server's clock rather than accepting a time
+ * from the browser -- a client whose clock is fast would otherwise be
+ * able to mark messages read before they arrived.
+ */
+function markConversationRead(string $sessionId): void
+{
+    if ($sessionId === '') {
+        return;
+    }
+
+    Supabase::client()->patch(
+        'livar_customer',
+        ['session_id' => 'eq.' . $sessionId],
+        ['last_read_at' => gmdate('c')]
+    );
+}
+
+/**
  * Stamps the customer's last inbound message time. This single column is
  * what the 24h free-form reply window is computed from, both for the
  * header indicator and for the server-side check in api/send.php.

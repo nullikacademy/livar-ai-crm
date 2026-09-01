@@ -618,6 +618,47 @@ the composer and can edit it.
 Only drafts are converted. Something an agent typed themselves is left
 exactly as they typed it.
 
+The thread renders that formatting too, rather than showing the raw
+punctuation — `*AED 0.42*` appears bold here exactly as it does on the
+customer's phone, along with `_italic_`, `~strikethrough~` and
+```monospace```. Fixing the outgoing message without this left agents
+reading asterisks the customer never saw.
+
+It is built as DOM nodes, never as an HTML string, so a customer's
+message is never parsed as markup. And the patterns avoid regex
+lookbehind on purpose: Safari only gained it in 16.4, and an unsupported
+group in a regex literal is a *parse* error, which would take the whole
+script down rather than just the formatting. Requiring a non-space at
+both edges does the same job — it is what stops "2 * 3 * 4" from turning
+into italics.
+
+### Unread messages
+
+A conversation with inbound messages you have not opened shows a count
+in the sidebar, and its row goes bold. Opening it clears the badge, as
+does a message arriving in the conversation already on screen.
+
+`last_read_at` on the customer is the marker, stamped from the server's
+clock by `api/read.php` — never from a time the browser sent, or a fast
+client clock could mark messages read before they arrived. Only *inbound*
+messages count: a reply you sent is not something to catch up on.
+
+Because the CRM has one shared login, "read" means read by the business
+rather than by one agent — clearing it on a phone clears it on the laptop
+too, which is what you want when it is the same person.
+
+Existing conversations are backfilled as read when the column is first
+created, so shipping this does not light up every row at once. That
+backfill runs exactly once and is skipped on every later re-run of the
+schema.
+
+### Telling contacts apart
+
+Without a photo, an avatar is initials on a colour derived from the
+customer's own id — so the sidebar is a row of distinguishable circles
+rather than identical ones, and a customer keeps their colour as the list
+reorders around them.
+
 ### Photos
 
 WhatsApp is a visual channel; a customer will send a picture of the can

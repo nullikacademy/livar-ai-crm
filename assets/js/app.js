@@ -21,6 +21,7 @@
         avatar: 'api/avatar.php',
         catalog: 'api/catalog.php',
         templates: 'api/templates.php',
+        read: 'api/read.php',
     };
 
     /** How each customer label reads on screen. Mirrors CUSTOMER_LABELS. */
@@ -173,13 +174,47 @@
      * it while this tab was open) falls back to the initials rather than
      * leaving a broken-image icon in the list.
      */
+    /**
+     * The colour an initials circle gets, from the customer's own id.
+     *
+     * Every avatar used to be the same orange, so a list without photos
+     * was a column of identical blobs and the eye had nothing to catch.
+     * A colour per contact makes the list scannable — and being derived
+     * from session_id rather than from position, a customer keeps their
+     * colour as the list reorders around them, which is the entire point.
+     *
+     * Pairs rather than one hue: the circle is a gradient, and picking
+     * both ends by hand keeps white text readable on all of them, which
+     * generating a hue at random does not.
+     */
+    const AVATAR_COLOURS = [
+        ['#FFA65C', '#FF7A00'], ['#7FB2FF', '#2563EB'], ['#6EE7B7', '#059669'],
+        ['#F9A8D4', '#DB2777'], ['#C4B5FD', '#7C3AED'], ['#FCD34D', '#D97706'],
+        ['#67E8F9', '#0891B2'], ['#FCA5A5', '#DC2626'], ['#A3E635', '#4D7C0F'],
+        ['#F0ABFC', '#A21CAF'], ['#94A3B8', '#475569'], ['#FDBA74', '#C2410C'],
+    ];
+
+    function avatarColour(customer) {
+        const key = customer?.session_id || customer?.wa_id || '';
+        // FNV-ish: cheap, stable, and spread evenly enough that adjacent
+        // numbers do not land on the same colour.
+        let hash = 2166136261;
+        for (let i = 0; i < key.length; i += 1) {
+            hash = Math.imul(hash ^ key.charCodeAt(i), 16777619) >>> 0;
+        }
+        return AVATAR_COLOURS[hash % AVATAR_COLOURS.length];
+    }
+
     function paintAvatar(node, customer) {
         if (!node) return;
         node.textContent = '';
         node.classList.remove('avatar--photo');
+        node.style.background = '';
 
         const url = customer?.avatar_url;
         if (!url) {
+            const [from, to] = avatarColour(customer);
+            node.style.background = `linear-gradient(140deg, ${from}, ${to})`;
             node.textContent = initials(customer || {});
             return;
         }
@@ -189,6 +224,8 @@
         img.loading = 'lazy';
         img.addEventListener('error', () => {
             node.classList.remove('avatar--photo');
+            const [from, to] = avatarColour(customer);
+            node.style.background = `linear-gradient(140deg, ${from}, ${to})`;
             node.textContent = initials(customer);
         });
         img.src = url;
@@ -365,8 +402,11 @@
             item.classList.add('is-selected');
         }
 
+        // Marks stripped, not rendered: one truncated line has no room
+        // for emphasis, but every reason not to show the asterisks that
+        // would have produced it.
         const preview = customer.last_message
-            ? escapeHtml(truncate(customer.last_message, 46))
+            ? escapeHtml(truncate(stripWhatsAppMarks(customer.last_message), 46))
             : '<span class="customer-item__phone">No messages yet</span>';
         const prefix = customer.last_message_type === 'ai'
             ? '<span class="customer-item__preview-prefix">You: </span>'
@@ -379,9 +419,23 @@
                     <span class="customer-item__name"></span>
                     <span class="customer-item__time">${escapeHtml(relativeTime(customer.last_activity_at || customer.created_at))}</span>
                 </span>
-                <span class="customer-item__preview">${prefix}${preview}</span>
+                <span class="customer-item__bottom">
+                    <span class="customer-item__preview">${prefix}${preview}</span>
+                </span>
             </span>
         `;
+
+        const unread = Number(customer.unread_count) || 0;
+        if (unread > 0) {
+            item.classList.add('is-unread');
+            const badge = document.createElement('span');
+            badge.className = 'unread-badge';
+            // 99+ rather than a badge that grows wide enough to shove the
+            // preview out of the row.
+            badge.textContent = unread > 99 ? '99+' : String(unread);
+            badge.title = `${unread} unread message${unread > 1 ? 's' : ''}`;
+            item.querySelector('.customer-item__bottom').appendChild(badge);
+        }
 
         // Everything below goes in through DOM properties rather than the
         // template above. The avatar carries a URL and the flag carries a
@@ -481,6 +535,9 @@
 
             state.messages = messagesData.messages;
             renderMessages({ scroll: true });
+
+            // Opening it is reading it.
+            markRead(sessionId);
 
             // Only steal focus on pointer/desktop -- auto-focusing on a
             // phone pops the keyboard over the conversation you just opened.
@@ -668,7 +725,7 @@
     function buildTextBody(bubble, msg) {
         const text = document.createElement('div');
         text.className = 'bubble__text';
-        linkifyInto(text, msg.content || '');
+        renderWhatsAppText(text, msg.content || '');
         bubble.appendChild(text);
     }
 
@@ -886,7 +943,7 @@
         if (!caption) return;
         const node = document.createElement('div');
         node.className = 'bubble__caption';
-        linkifyInto(node, caption);
+        renderWhatsAppText(node, caption);
         bubble.appendChild(node);
     }
 
@@ -946,6 +1003,87 @@
         copyBtn.addEventListener('click', () => copyToClipboard(content, copyBtn));
         actions.appendChild(copyBtn);
         bubble.appendChild(actions);
+    }
+
+    /**
+     * WhatsApp's own emphasis, as the customer's phone renders it.
+     *
+     * Drafts are converted to WhatsApp's spelling on the way out of
+     * api/draft.php — one asterisk for bold, not two. That fixed what the
+     * customer receives, but left the asterisks visible HERE, so an agent
+     * read `*AED 0.42*` where the customer saw bold. This is the other
+     * half: the thread shows what was actually sent.
+     *
+     * `mono` is matched first and does not nest — inside a code span the
+     * other characters are literal, which is what a code span is for.
+     *
+     * Written without lookbehind on purpose. Safari only gained it in
+     * 16.4, and an unsupported group in a regex LITERAL is a parse error,
+     * which would take the whole file down rather than just this feature.
+     * Requiring a non-space at both edges does the same job: it is what
+     * stops "2 * 3 * 4" from turning into italics.
+     */
+    const WA_MARKS = [
+        { pattern: /```([\s\S]+?)```/, tag: 'code', nest: false },
+        { pattern: /\*([^\s*][^*\n]*?[^\s*]|[^\s*])\*/, tag: 'strong', nest: true },
+        { pattern: /_([^\s_][^_\n]*?[^\s_]|[^\s_])_/, tag: 'em', nest: true },
+        { pattern: /~([^\s~][^~\n]*?[^\s~]|[^\s~])~/, tag: 'del', nest: true },
+    ];
+
+    function renderWhatsAppText(node, text) {
+        // Whichever mark opens earliest wins, so the spans nest the way
+        // they were written rather than in the order this list happens
+        // to be in.
+        let first = null;
+        for (const mark of WA_MARKS) {
+            const match = mark.pattern.exec(text);
+            if (match && (first === null || match.index < first.match.index)) {
+                first = { match, mark };
+            }
+        }
+
+        if (first === null) {
+            linkifyInto(node, text);
+            return;
+        }
+
+        const { match, mark } = first;
+
+        if (match.index > 0) {
+            linkifyInto(node, text.slice(0, match.index));
+        }
+
+        // createElement + textContent throughout: none of this text is
+        // ever parsed as markup, which is the same rule the rest of the
+        // bubble builders follow.
+        const span = document.createElement(mark.tag);
+        if (mark.nest) {
+            renderWhatsAppText(span, match[1]);
+        } else {
+            span.textContent = match[1];
+        }
+        node.appendChild(span);
+
+        renderWhatsAppText(node, text.slice(match.index + match[0].length));
+    }
+
+    /**
+     * The same text with the marks removed rather than applied.
+     *
+     * For the sidebar preview, which is one truncated line with no room
+     * to render emphasis — but every reason not to show the punctuation
+     * that would have produced it.
+     */
+    function stripWhatsAppMarks(text) {
+        let out = String(text ?? '');
+        let previous;
+        do {
+            previous = out;
+            for (const mark of WA_MARKS) {
+                out = out.replace(new RegExp(mark.pattern.source, 'g'), '$1');
+            }
+        } while (out !== previous);
+        return out;
     }
 
     /**
@@ -2075,6 +2213,31 @@
         sidebarPollTimer = null;
     }
 
+    /**
+     * Clears a conversation's unread badge, here and on the server.
+     *
+     * The local half matters as much as the request: the sidebar poll
+     * runs every 25s and would otherwise paint the badge back on before
+     * the server had been told, making it flicker.
+     */
+    async function markRead(sessionId) {
+        const known = state.customers.find((c) => c.session_id === sessionId);
+        if (known && Number(known.unread_count) > 0) {
+            known.unread_count = 0;
+            const node = el.customerList.querySelector(
+                `.customer-item[data-session-id="${cssEscape(sessionId)}"]`,
+            );
+            if (node) node.replaceWith(buildCustomerItem(known));
+            markSelectedInList(state.selectedSessionId);
+        }
+
+        try {
+            await api(API.read, { method: 'POST', body: JSON.stringify({ session_id: sessionId }) });
+        } catch {
+            /* Not worth a toast. The next open tries again. */
+        }
+    }
+
     /** Asks only for rows newer than the last one on screen. */
     async function pollMessages() {
         const sessionId = state.selectedSessionId;
@@ -2099,6 +2262,9 @@
                 .find((m) => m.direction === 'in' && m.created_at);
             if (lastInbound && state.selectedCustomer) {
                 state.selectedCustomer.last_inbound_at = lastInbound.created_at;
+                // It arrived in the conversation on screen, so it is not
+                // something to catch up on later.
+                markRead(sessionId);
             }
             refreshWindowNotice();
         } catch {
