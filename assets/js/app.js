@@ -386,6 +386,99 @@
         el.customerList.querySelectorAll('.customer-item').forEach((n) => n.remove());
     }
 
+    /**
+     * Brings the rendered list in line with state.customers, reusing the
+     * rows that have not changed.
+     *
+     * The sidebar used to be torn down and rebuilt whole on every 25s
+     * poll and after every send. With a real inbox that is dozens of rows
+     * — each with an avatar image and a flag — destroyed and recreated on
+     * a timer, which on a phone is visible as a flicker and wasted work
+     * on a conversation nobody touched. It also dropped any :hover and
+     * reset the row a finger was on mid-scroll.
+     *
+     * Rows are keyed by session_id, and only the ones whose rendered
+     * content actually differs are replaced. This is the same reasoning
+     * as appendMessages() versus renderMessages() in the thread.
+     */
+    function syncCustomerListDom() {
+        const existing = new Map();
+        el.customerList.querySelectorAll('.customer-item').forEach((node) => {
+            existing.set(node.dataset.sessionId, node);
+        });
+
+        let previous = null;
+
+        state.customers.forEach((customer) => {
+            const current = existing.get(customer.session_id);
+            const signature = rowSignature(customer);
+            let node = current;
+
+            if (!node) {
+                node = buildCustomerItem(customer);
+            } else if (node.dataset.signature !== signature) {
+                // Only a row whose visible content changed is rebuilt.
+                const fresh = buildCustomerItem(customer);
+                node.replaceWith(fresh);
+                node = fresh;
+            }
+            node.dataset.signature = signature;
+            existing.delete(customer.session_id);
+
+            // Move into place only when it is not already there, so a
+            // reorder touches the rows that moved and no others.
+            //
+            // Anchored on the customer rows specifically, not on any
+            // child: the list also holds the loading skeleton, and
+            // comparing against firstElementChild matched that instead
+            // and moved every row on every poll — the exact churn this
+            // function exists to avoid.
+            const expected = previous === null ? firstCustomerNode() : nextCustomerNode(previous);
+            if (expected !== node) {
+                el.customerList.insertBefore(node, expected);
+            }
+            previous = node;
+        });
+
+        // Anything left is no longer in the list.
+        existing.forEach((node) => node.remove());
+
+        markSelectedInList(state.selectedSessionId);
+    }
+
+    /**
+     * Everything about a customer that the row actually draws.
+     *
+     * Compared as a string so an unchanged row is left alone: a poll that
+     * returns identical data should cost nothing.
+     */
+    /** The first rendered customer row, skipping the skeleton. */
+    function firstCustomerNode() {
+        return el.customerList.querySelector('.customer-item');
+    }
+
+    /** The next customer row after this one, skipping anything else. */
+    function nextCustomerNode(node) {
+        let next = node.nextElementSibling;
+        while (next && !next.classList.contains('customer-item')) {
+            next = next.nextElementSibling;
+        }
+        return next;
+    }
+
+    function rowSignature(customer) {
+        return [
+            fullName(customer),
+            customer.last_message,
+            customer.last_message_type,
+            customer.last_activity_at,
+            customer.unread_count,
+            customer.label,
+            customer.avatar_url,
+            customer.country_code,
+        ].join('');
+    }
+
     function renderCustomers(customers) {
         const frag = document.createDocumentFragment();
         customers.forEach((customer) => frag.appendChild(buildCustomerItem(customer)));
@@ -447,6 +540,7 @@
         const chip = buildLabelChip(customer);
         if (chip) item.querySelector('.customer-item__top').insertBefore(chip, item.querySelector('.customer-item__time'));
 
+        item.dataset.signature = rowSignature(customer);
         item.addEventListener('click', () => selectCustomer(customer.session_id, { focusComposer: true }));
         return item;
     }
@@ -2224,11 +2318,7 @@
         const known = state.customers.find((c) => c.session_id === sessionId);
         if (known && Number(known.unread_count) > 0) {
             known.unread_count = 0;
-            const node = el.customerList.querySelector(
-                `.customer-item[data-session-id="${cssEscape(sessionId)}"]`,
-            );
-            if (node) node.replaceWith(buildCustomerItem(known));
-            markSelectedInList(state.selectedSessionId);
+            syncCustomerListDom();
         }
 
         try {
@@ -2286,9 +2376,7 @@
             const tail = state.customers.filter((c) => !seen.has(c.session_id));
             state.customers = [...data.customers, ...tail];
 
-            clearCustomerListDom();
-            renderCustomers(state.customers);
-            markSelectedInList(state.selectedSessionId);
+            syncCustomerListDom();
         } catch {
             /* Same: the next tick will catch up. */
         }
@@ -2321,9 +2409,7 @@
             if (idx !== -1) state.customers.splice(idx, 1);
             state.customers.unshift(merged);
 
-            clearCustomerListDom();
-            renderCustomers(state.customers);
-            markSelectedInList(state.selectedSessionId);
+            syncCustomerListDom();
         } catch {
             /* Non-critical — sidebar preview will catch up on next load. */
         }

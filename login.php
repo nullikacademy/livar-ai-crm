@@ -58,9 +58,20 @@ function asset(string $relativePath): string
 <meta name="theme-color" content="#FFFFFF" />
 <meta name="robots" content="noindex, nofollow" />
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!--
+    Inter is self-hosted (assets/fonts/). It used to come from
+    fonts.googleapis.com through a render-blocking <link>, which put two
+    extra DNS+TLS handshakes on the critical path -- and a white screen
+    for as long as that host took to answer.
+-->
+<!--
+    No ?v= on the preload: @font-face inside inter.css asks for the plain
+    filename, and a mismatched URL downloads the file a second time
+    rather than priming the one the CSS will use. The font never changes
+    without its name changing, so there is nothing to bust.
+-->
+<link rel="preload" href="assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="<?= asset('assets/fonts/inter.css') ?>" />
 <link rel="stylesheet" href="<?= asset('assets/css/style.css') ?>" />
 </head>
 <body>

@@ -13,11 +13,33 @@
     Header set Referrer-Policy "strict-origin-when-cross-origin"
 </IfModule>
 
+# Compression. app.js is ~100 KB and style.css ~50 KB of plain text, and
+# this is a mobile-first app that agents open on phone data -- gzip takes
+# roughly three quarters off both. There is no build step here to minify
+# with, so this is where the transfer size is won.
+#
+# SVG matters too: the vendored flags are text, and a few of the complex
+# ones (coats of arms) are large.
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/css
+    AddOutputFilterByType DEFLATE application/javascript text/javascript
+    AddOutputFilterByType DEFLATE application/json
+    AddOutputFilterByType DEFLATE image/svg+xml
+    # woff2 is already compressed; running deflate over it burns CPU for
+    # nothing.
+</IfModule>
+
 # Sensible caching for static assets.
+#
+# CSS and JS are requested through asset(), which appends the file's
+# mtime -- a changed file gets a new URL, so a long cache never serves a
+# stale one. Flags and fonts are content that does not change at all.
 <IfModule mod_expires.c>
     ExpiresActive On
     ExpiresByType text/css "access plus 1 week"
     ExpiresByType application/javascript "access plus 1 week"
+    ExpiresByType image/svg+xml "access plus 1 year"
+    ExpiresByType font/woff2 "access plus 1 year"
 </IfModule>
 
 Options -Indexes

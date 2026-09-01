@@ -184,6 +184,19 @@ README** — the template stays placeholders-only.
   read exactly once, inside a `do $$` guard — with plain
   `add column if not exists` every conversation would badge on upgrade,
   and a re-run would wipe genuine unread state.
+- **No third-party asset on the critical path.** Inter is self-hosted in
+  `assets/fonts/`. It used to come from fonts.googleapis.com through a
+  render-blocking `<link>`: measured at 722ms to the first row when that
+  host answered and **13,473ms when it did not**. A `preload` must use the
+  byte-identical URL the `@font-face` asks for — a `?v=` on one and not
+  the other downloads the file twice.
+- **Sync the sidebar, never rebuild it.** `syncCustomerListDom()` keys
+  rows by `session_id` and replaces only those whose `rowSignature()`
+  changed; an idle 25s poll now touches zero nodes where it used to
+  destroy and recreate every row, avatar images and all. Anchor ordering
+  on `.customer-item` siblings, not `firstElementChild` — the list also
+  holds the loading skeleton, and that mistake silently reintroduces the
+  full rebuild.
 - Poll with `appendMessages()`, not `renderMessages()`. The latter is a
   full teardown and rebuild, which re-requests and re-flashes every
   image on each 8s tick; keep it for conversation switches.
