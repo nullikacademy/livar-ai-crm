@@ -141,6 +141,33 @@ final class WhatsApp
     }
 
     /**
+     * Puts an emoji on a message the customer sent, or takes it off.
+     *
+     * `message_id` is the message being reacted to. An empty emoji is how
+     * WhatsApp spells removal -- not an error, and not something to guard
+     * against, since taking a reaction back is a thing people do.
+     *
+     * @return array<string, mixed>
+     */
+    public function sendReaction(string $to, string $messageId, string $emoji): array
+    {
+        if ($messageId === '') {
+            throw new WhatsAppException('There is no message to react to.', 422);
+        }
+
+        return $this->send([
+            'to'       => self::normalizeTo($to),
+            'type'     => 'reaction',
+            'reaction' => [
+                'message_id' => $messageId,
+                // One emoji, or empty to remove. Anything longer is not a
+                // reaction, and Meta rejects it.
+                'emoji'      => $emoji === '' ? '' : mb_substr($emoji, 0, 8),
+            ],
+        ]);
+    }
+
+    /**
      * Sends an approved message template.
      *
      * This is the ONLY thing WhatsApp will deliver once the 24-hour

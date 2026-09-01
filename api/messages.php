@@ -43,6 +43,13 @@ try {
     json_response([
         'success'  => true,
         'messages' => $messages,
+        // Sent on every request, including a since_id poll that returns
+        // no new messages. A reaction changes a row that already exists,
+        // so it is invisible to an incremental fetch -- without this a
+        // customer's 👍 on an hour-old message would not appear until
+        // the conversation was reopened. Only rows that carry one are
+        // returned, so in a normal thread this is empty or tiny.
+        'reactions' => getReactions($sessionId),
     ]);
 } catch (SupabaseException $e) {
     error_log('[api/messages] ' . $e->getMessage());

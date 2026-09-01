@@ -773,6 +773,74 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 .bubble--ours .bubble__text code,
 .bubble--ours .bubble__caption code { background: rgba(255, 255, 255, 0.18); }
 
+/* Reactions. They hang off the bubble's lower edge the way WhatsApp
+   draws them, overlapping slightly so it reads as attached to the
+   message rather than as a message of its own. */
+.bubble-row { position: relative; }
+.bubble__reactions {
+    display: flex;
+    gap: 3px;
+    margin-top: -9px;
+    margin-left: 10px;
+    z-index: 1;
+}
+.bubble-row--ours .bubble__reactions { margin-left: 0; margin-right: 10px; justify-content: flex-end; }
+.bubble__reaction {
+    padding: 1px 6px;
+    border-radius: var(--r-full);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-1, 0 1px 2px rgba(16, 16, 20, 0.08));
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+/* The react button. Hidden until the row is hovered on a mouse, always
+   there on touch, where there is no hover to reveal it with. */
+.bubble__react {
+    position: absolute;
+    bottom: 4px;
+    left: calc(100% + 6px);
+    width: 26px;
+    height: 26px;
+    border-radius: var(--r-full);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--ink-3);
+    font-size: 14px;
+    line-height: 1;
+    opacity: 0;
+    transition: opacity var(--t-fast) var(--ease);
+}
+.bubble-row:hover .bubble__react,
+.bubble__react:focus-visible { opacity: 1; }
+@media (pointer: coarse) {
+    .bubble__react { opacity: 0.55; width: 32px; height: 32px; }
+}
+
+.reaction-picker {
+    position: fixed;
+    z-index: 60;
+    display: flex;
+    gap: 2px;
+    padding: 5px;
+    border-radius: var(--r-full);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow-2);
+    animation: riseIn var(--t-fast) var(--ease) both;
+}
+.reaction-picker__choice {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r-full);
+    font-size: 19px;
+    line-height: 1;
+    transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.reaction-picker__choice:hover { background: var(--surface-2); transform: scale(1.15); }
+.reaction-picker__choice.is-current { background: var(--accent-tint); }
+
 /* Links inside a text bubble. */
 .bubble__link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .bubble--customer .bubble__link { color: var(--accent-active); }

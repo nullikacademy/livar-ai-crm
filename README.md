@@ -456,6 +456,27 @@ a customer a picture; without one, the avatar is their initials.
   WhatsApp when Send is pressed. The file's mime is re-read from its own
   bytes with `finfo_file()`, never taken from the browser.
 
+### Reactions
+
+The 👍 a customer long-presses onto a message is not a message. WhatsApp
+delivers it as a `reaction` pointing at the message it belongs to, and
+the CRM files it the same way: it is written onto the row it was left on
+(`wa_reaction`), and no new bubble appears in the thread. Removing the
+reaction sends the same event with an empty emoji, which clears the
+column.
+
+Agents react the other way with the **☺** button on any bubble: a small
+picker offers 👍 ❤️ 😂 😮 😢 🙏, tapping the one already chosen removes
+it. That is stored separately (`wa_reaction_out`) so both sides can react
+to the same message, which is what WhatsApp itself shows.
+
+Reactions are the one thing the incremental poll cannot see. Everything
+else in a thread is a new row, fetched with `since_id`; a reaction
+changes a row the browser already has, and an hour-old message can gain
+one at any time. So `api/messages.php` returns the thread's reactions on
+every request, new messages or not — only rows that actually carry one,
+which in a normal conversation is a handful or none.
+
 ### Voice messages
 
 Every voice note is transcribed on arrival, in whatever language it was

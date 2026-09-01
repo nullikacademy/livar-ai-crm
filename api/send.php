@@ -71,6 +71,7 @@ try {
         'template' => sendTemplateMessage($waId, $sessionId, $data),
         'buttons'  => sendButtonsMessage($waId, $sessionId, $text, $data),
         'catalog'  => sendCatalogMessage($waId, $sessionId, $text),
+        'reaction' => sendReactionMessage($waId, $data),
         default    => sendMediaMessage($waId, $sessionId, $type, $text, input_str($data, 'media_ref')),
     };
 
@@ -143,6 +144,44 @@ function sendLocationMessage(string $waId, string $sessionId, array $data): arra
         'place_address' => $address,
         'wa_message_id' => WhatsApp::messageIdFrom($response),
     ]);
+}
+
+/**
+ * Puts an emoji on one of the customer's messages, or takes it off.
+ *
+ * Unlike every other type here this stores nothing new -- it annotates
+ * the row it points at. A reaction is not a turn in the conversation,
+ * and inserting one would put a bubble in the thread that replies to
+ * nothing.
+ *
+ * The response is shaped like the others so the frontend can treat it
+ * the same, but it carries the target's id rather than a new message.
+ *
+ * @param array<string, mixed> $data
+ * @return array<string, mixed>
+ */
+function sendReactionMessage(string $waId, array $data): array
+{
+    $targetId = input_str($data, 'wa_message_id');
+    $emoji    = isset($data['emoji']) && is_string($data['emoji']) ? trim($data['emoji']) : '';
+
+    if ($targetId === '') {
+        json_error('There is no message to react to.', 422);
+    }
+
+    WhatsApp::client()->sendReaction($waId, $targetId, $emoji);
+
+    // Recorded only after WhatsApp accepted it, so the thread never shows
+    // a reaction the customer's phone never got.
+    if (!setMessageReaction($targetId, $emoji, 'out')) {
+        error_log('[api/send] reacted to a message that is not in the thread: ' . $targetId);
+    }
+
+    return [
+        'reaction'      => true,
+        'wa_message_id' => $targetId,
+        'emoji'         => $emoji,
+    ];
 }
 
 /**

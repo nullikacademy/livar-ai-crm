@@ -253,9 +253,9 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
 
     $query = [
         'session_id' => 'eq.' . $sessionId,
-        'select'     => 'id,session_id,message,created_at,direction,wa_status,msg_type,'
+        'select'     => 'id,session_id,message,created_at,direction,wa_status,msg_type,wa_message_id,'
                       . 'media_path,media_mime,media_size,media_name,ai_caption,ai_transcript,'
-                      . 'wa_buttons,wa_template,wa_source,'
+                      . 'wa_buttons,wa_template,wa_source,wa_reaction,wa_reaction_out,'
                       . 'latitude,longitude,place_name,place_address',
         'limit'      => (string) $limit,
     ];
@@ -295,6 +295,9 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
             'created_at'    => $row['created_at'] ?? null,
             'direction'     => $row['direction'] ?? null,
             'wa_status'     => $row['wa_status'] ?? null,
+            // Meta's own id for this message. Not a secret, and the
+            // browser needs it to say which message it is reacting to.
+            'wa_message_id' => $row['wa_message_id'] ?? null,
             'msg_type'      => $msgType,
 
             // Never the path on disk. api/media.php re-checks auth, and
@@ -316,6 +319,10 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
             // 'app' for a reply typed on the phone and mirrored back by
             // the coexistence echo webhook; null for one this CRM sent.
             'wa_source'     => $row['wa_source'] ?? null,
+
+            // The emoji on this message: theirs, and ours.
+            'reaction'      => $row['wa_reaction'] ?? null,
+            'reaction_out'  => $row['wa_reaction_out'] ?? null,
 
             // Server-side only: the draft builder needs the file on disk
             // to attach a real image. api/messages.php strips this before
@@ -747,6 +754,79 @@ function updateMessageStatus(string $waMessageId, string $status, string $error 
 
     $sb = Supabase::client();
     $sb->patch('n8n_chat_history', $query, $payload);
+}
+
+/**
+ * Every reaction currently on a conversation.
+ *
+ * Its own query because reactions break the incremental poll: they
+ * change a row that already exists, and getMessages(sinceId) only ever
+ * returns rows NEWER than what is on screen. A customer reacting to
+ * something from an hour ago would otherwise not show up until the
+ * conversation was reopened.
+ *
+ * Cheap by construction -- it asks only for rows that actually carry a
+ * reaction, which in a normal thread is none or a handful.
+ *
+ * @return array<int, array{in: ?string, out: ?string}> keyed by message id
+ */
+function getReactions(string $sessionId): array
+{
+    $result = Supabase::client()->get('n8n_chat_history', [
+        'session_id' => 'eq.' . $sessionId,
+        'or'         => '(wa_reaction.not.is.null,wa_reaction_out.not.is.null)',
+        'select'     => 'id,wa_reaction,wa_reaction_out',
+        'limit'      => '200',
+    ]);
+
+    $reactions = [];
+    foreach ($result['rows'] as $row) {
+        $reactions[(int) $row['id']] = [
+            'in'  => $row['wa_reaction'] ?? null,
+            'out' => $row['wa_reaction_out'] ?? null,
+        ];
+    }
+
+    return $reactions;
+}
+
+/**
+ * Puts a reaction on a message, or takes one off.
+ *
+ * A reaction is not a message. WhatsApp sends it as one, but what it
+ * means is "this emoji is now on that other message", so it is stored on
+ * the row it refers to rather than inserted as a bubble of its own --
+ * otherwise a thread fills up with 👍 entries that reply to nothing and
+ * the sidebar preview becomes an emoji.
+ *
+ * An empty $emoji is a removal: WhatsApp sends the same shape with no
+ * emoji when somebody takes their reaction back.
+ *
+ * $direction is 'in' for the customer's reaction and 'out' for ours,
+ * which are different columns because both can exist on one message.
+ *
+ * Returns false when the message being reacted to is not in the CRM --
+ * a reaction to something older than this install, which is nothing to
+ * act on but worth knowing about.
+ */
+function setMessageReaction(string $waMessageId, string $emoji, string $direction = 'in'): bool
+{
+    if ($waMessageId === '') {
+        return false;
+    }
+
+    $column = $direction === 'out' ? 'wa_reaction_out' : 'wa_reaction';
+    // Emoji only, and one of them: the column is a reaction, not a text
+    // field, and WhatsApp allows exactly one per person per message.
+    $value  = $emoji === '' ? null : mb_substr($emoji, 0, 8);
+
+    $rows = Supabase::client()->patch(
+        'n8n_chat_history',
+        ['wa_message_id' => 'eq.' . $waMessageId],
+        [$column => $value]
+    );
+
+    return $rows !== [];
 }
 
 /**

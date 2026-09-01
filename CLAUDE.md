@@ -64,6 +64,15 @@ README** — the template stays placeholders-only.
   either: the 24-hour window is opened by the customer speaking, and us
   replying from a phone is not that. `wa_source` records which side wrote
   a message — `'crm'` from here, `'app'` from a phone.
+- **A reaction annotates a row; it is never a row.** WhatsApp sends a
+  `reaction` naming the message it belongs to, so `handle_reaction()`
+  writes it onto that row's `wa_reaction` and returns — before
+  `getOrCreateCustomerByWaId()`, so a 👍 from an unknown number cannot
+  conjure a customer. Ours goes in `wa_reaction_out`, separately, because
+  both sides can react to the same message. An empty emoji is a removal,
+  not a no-op. `getReactions()` exists because a reaction mutates a row
+  the browser already has: `since_id` polling would never see it, so
+  `api/messages.php` returns the thread's reactions on every request.
 - **Drafting runs in-app, not in n8n.** `api/draft.php` calls OpenAI
   directly. A draft is never persisted — it goes into the composer, and
   only becomes a row if the agent presses Send.

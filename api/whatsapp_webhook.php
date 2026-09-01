@@ -191,6 +191,15 @@ function handle_message(array $message, array $profileNames): ?array
         return null;
     }
 
+    // A reaction annotates a message that already exists rather than
+    // adding one, so it never reaches the insert below. Handled before
+    // getOrCreateCustomerByWaId() too: a 👍 on an old message should not
+    // be the thing that creates a customer record.
+    if (($message['type'] ?? '') === 'reaction') {
+        handle_reaction($message);
+        return null;
+    }
+
     $customer  = getOrCreateCustomerByWaId($waId, $profileNames[$waId] ?? '');
     $sessionId = (string) $customer['session_id'];
 
@@ -448,6 +457,39 @@ function extract_message_fields(array $message, string $direction = 'in'): array
                 'msg_type'  => 'unsupported',
                 'content'   => '',
             ];
+    }
+}
+
+/**
+ * Puts a customer's reaction onto the message it was left on.
+ *
+ * `reaction.message_id` is the message being reacted to, not the
+ * reaction itself, so this finds that row and annotates it. Nothing is
+ * inserted: a 👍 is not a turn in the conversation, and treating it as
+ * one would fill the thread with bubbles that reply to nothing and make
+ * the sidebar preview an emoji.
+ *
+ * An absent or empty emoji means the reaction was removed, which the
+ * same call handles by clearing the column.
+ *
+ * @param array<string, mixed> $message
+ */
+function handle_reaction(array $message): void
+{
+    $reaction = is_array($message['reaction'] ?? null) ? $message['reaction'] : [];
+    $targetId = (string) ($reaction['message_id'] ?? '');
+    $emoji    = trim((string) ($reaction['emoji'] ?? ''));
+
+    if ($targetId === '') {
+        error_log('[WhatsApp] reaction names no message: ' . json_encode($message));
+        return;
+    }
+
+    if (!setMessageReaction($targetId, $emoji, 'in')) {
+        // Reacting to something from before this CRM existed, or to a
+        // message that never reached it. Nothing to annotate, and not a
+        // failure worth retrying.
+        error_log('[WhatsApp] reaction for a message not in the thread: ' . $targetId);
     }
 }
 

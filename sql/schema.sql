@@ -148,6 +148,14 @@ alter table public.n8n_chat_history
     -- Separate from ai_caption because they do different jobs: this is
     -- what api/draft.php reasons from, the caption is what the UI shows.
     add column if not exists ai_transcript text,
+    -- Reactions annotate a message rather than being one, so they live on
+    -- the row they were put on instead of creating a bubble of their own.
+    -- Two columns because a 1:1 chat has two possible reactors and
+    -- WhatsApp allows each one emoji per message: wa_reaction is what the
+    -- CUSTOMER put on this row, wa_reaction_out is what WE put on it.
+    -- Clearing a reaction sets the column back to null.
+    add column if not exists wa_reaction     text,
+    add column if not exists wa_reaction_out text,
     add column if not exists media_path    text,
     add column if not exists media_mime    text,
     add column if not exists media_size    bigint,

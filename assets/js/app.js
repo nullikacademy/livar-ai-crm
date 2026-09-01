@@ -804,6 +804,13 @@
         }
 
         row.appendChild(bubble);
+        appendReactions(row, msg);
+
+        // Reacting to the customer, not to ourselves. WhatsApp allows
+        // both, but an agent putting a 👍 on their own reply is not a
+        // thing anyone needs a button for.
+        if (!isOurs && msg.wa_message_id) appendReactAction(row, msg);
+
         return row;
     }
 
@@ -1108,6 +1115,118 @@
         // Above the text, like the template tag, so it reads as a label
         // on the message rather than a footnote after it.
         bubble.prepend(tag);
+    }
+
+    /** The emoji people have put on this message: theirs, and ours. */
+    function appendReactions(row, msg) {
+        const emojis = [msg.reaction, msg.reaction_out].filter(Boolean);
+        row.querySelector('.bubble__reactions')?.remove();
+        if (emojis.length === 0) return;
+
+        const holder = document.createElement('div');
+        holder.className = 'bubble__reactions';
+        emojis.forEach((emoji) => {
+            const chip = document.createElement('span');
+            chip.className = 'bubble__reaction';
+            chip.textContent = emoji;
+            holder.appendChild(chip);
+        });
+        row.appendChild(holder);
+    }
+
+    /** The emoji offered when reacting. WhatsApp's own default set. */
+    const REACTION_CHOICES = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+    /**
+     * The react button on a customer's message, and the picker it opens.
+     *
+     * Choosing the emoji already on the message removes it, which is how
+     * WhatsApp behaves and what someone who tapped the wrong one will
+     * try first.
+     */
+    function appendReactAction(row, msg) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'bubble__react';
+        button.title = 'React to this message';
+        button.textContent = '☺';
+
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            openReactionPicker(button, msg);
+        });
+
+        row.appendChild(button);
+    }
+
+    function openReactionPicker(anchor, msg) {
+        closeReactionPicker();
+
+        const picker = document.createElement('div');
+        picker.className = 'reaction-picker';
+        picker.id = 'reactionPicker';
+
+        REACTION_CHOICES.forEach((emoji) => {
+            const choice = document.createElement('button');
+            choice.type = 'button';
+            choice.className = 'reaction-picker__choice';
+            if (msg.reaction_out === emoji) choice.classList.add('is-current');
+            choice.textContent = emoji;
+            choice.addEventListener('click', () => {
+                closeReactionPicker();
+                // Tapping the one already there takes it off.
+                sendReaction(msg, msg.reaction_out === emoji ? '' : emoji);
+            });
+            picker.appendChild(choice);
+        });
+
+        document.body.appendChild(picker);
+
+        const rect = anchor.getBoundingClientRect();
+        picker.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - picker.offsetWidth - 8))}px`;
+        picker.style.top = `${Math.max(8, rect.top - picker.offsetHeight - 6)}px`;
+
+        setTimeout(() => document.addEventListener('click', closeReactionPicker, { once: true }), 0);
+    }
+
+    function closeReactionPicker() {
+        document.getElementById('reactionPicker')?.remove();
+    }
+
+    /**
+     * Puts an emoji on a customer's message, or takes it off.
+     *
+     * Nothing is added to the thread: a reaction annotates the message it
+     * was left on. The bubble is repainted in place rather than the whole
+     * conversation re-rendered.
+     */
+    async function sendReaction(msg, emoji) {
+        const sessionId = state.selectedSessionId;
+
+        try {
+            await api(API.send, {
+                method: 'POST',
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    type: 'reaction',
+                    wa_message_id: msg.wa_message_id,
+                    emoji,
+                }),
+            });
+
+            if (sessionId !== state.selectedSessionId) return;
+
+            msg.reaction_out = emoji || null;
+            const stored = state.messages.find((m) => m.id === msg.id);
+            if (stored) stored.reaction_out = msg.reaction_out;
+
+            const row = el.chatMessages.querySelector(
+                `.bubble-row[data-message-id="${cssEscape(String(msg.id))}"]`,
+            );
+            if (row) appendReactions(row, msg);
+        } catch (err) {
+            toast(err.message, 'error');
+        }
     }
 
     function appendStatus(bubble, msg) {
@@ -2393,6 +2512,13 @@
 
             // The agent may have switched conversations mid-request.
             if (sessionId !== state.selectedSessionId) return;
+
+            // Before the early return below: a reaction changes a row
+            // that already exists, so it arrives on a tick that has no
+            // new messages at all. Bailing out first would mean a 👍
+            // never showed up until the conversation was reopened.
+            applyReactions(data.reactions);
+
             if (!data.messages || data.messages.length === 0) return;
 
             appendMessages(data.messages);
@@ -2411,6 +2537,35 @@
         } catch {
             /* A dropped poll is not worth a toast; the next tick retries. */
         }
+    }
+
+    /**
+     * Paints the reactions the server reports onto the bubbles on screen.
+     *
+     * Only touches a bubble whose reactions actually differ, so a poll
+     * that changes nothing costs nothing -- the same reasoning as the
+     * sidebar sync.
+     *
+     * @param {Object<string, {in: ?string, out: ?string}>} reactions
+     */
+    function applyReactions(reactions) {
+        if (!reactions) return;
+
+        state.messages.forEach((msg) => {
+            const found = reactions[String(msg.id)] || null;
+            const nextIn = found ? found.in : null;
+            const nextOut = found ? found.out : null;
+
+            if (msg.reaction === nextIn && msg.reaction_out === nextOut) return;
+
+            msg.reaction = nextIn;
+            msg.reaction_out = nextOut;
+
+            const row = el.chatMessages.querySelector(
+                `.bubble-row[data-message-id="${cssEscape(String(msg.id))}"]`,
+            );
+            if (row) appendReactions(row, msg);
+        });
     }
 
     /** Refreshes page 0 of the sidebar and merges it in place. */
@@ -2723,7 +2878,9 @@
         const typingInField = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 
         if (e.key === 'Escape') {
-            if (document.getElementById('locationDialog')) {
+            if (document.getElementById('reactionPicker')) {
+                closeReactionPicker();
+            } else if (document.getElementById('locationDialog')) {
                 closeLocationDialog();
             } else if (document.getElementById('questionDialog')) {
                 closeQuestionDialog();
