@@ -92,6 +92,16 @@ function asset(string $relativePath): string
                 </div>
 
                 <div class="field">
+                    <label for="aiTranscribeModel">Voice transcription model</label>
+                    <input type="text" id="aiTranscribeModel" autocomplete="off" spellcheck="false" />
+                    <p class="field__help">
+                        Turns voice notes into text, in whatever language they were
+                        spoken. <code>whisper-1</code> works everywhere; the chat model
+                        above cannot do audio, which is why this is separate.
+                    </p>
+                </div>
+
+                <div class="field">
                     <label for="aiPrompt">System prompt</label>
                     <textarea id="aiPrompt" rows="14" spellcheck="false"></textarea>
                     <p class="field__help">
@@ -144,8 +154,20 @@ function asset(string $relativePath): string
                     Run a live draft test
                     <span class="settings__action-note">Calls OpenAI once — costs a model call</span>
                 </button>
+
+                <!--
+                    Backfill for voice notes that arrived before
+                    transcription existed. New ones are done by the
+                    webhook as they land, so this button is only ever
+                    about catching up.
+                -->
+                <button class="btn btn--ghost settings__action" id="transcribeBtn">
+                    Transcribe old voice messages
+                    <span class="settings__action-note" id="transcribeNote">Checking…</span>
+                </button>
             </div>
             <div class="health-item health-item--standalone" id="aiLiveResult" hidden></div>
+            <div class="health-item health-item--standalone" id="transcribeResult" hidden></div>
         </section>
 
         <p class="settings__footer">

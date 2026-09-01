@@ -135,7 +135,13 @@ function buildTurns(array $messages): array
 
         $label = match ($type) {
             'video'    => '[sent a video]',
-            'audio'    => '[sent a voice message]',
+            // The transcript is what was actually said, in the language
+            // it was said in -- handed over untranslated so the model
+            // sees the customer's own words rather than a summary of
+            // them. Falls back to the English label, then to the bare
+            // marker, so a voice note the AI could not hear still shows
+            // up as something that happened.
+            'audio'    => voiceLabel($msg),
             'document' => '[sent a document' . ($msg['media_name'] ? ': ' . $msg['media_name'] : '') . ']',
             'location' => '[shared a location' . ($msg['place_name'] ? ': ' . $msg['place_name'] : '') . ']',
             'sticker'  => '[sent a sticker]',
@@ -171,6 +177,32 @@ function buildTurns(array $messages): array
     }
 
     return $turns;
+}
+
+/**
+ * What a voice note contributes to the conversation the model reads.
+ *
+ * Marked as spoken rather than passed off as typed text: "[voice
+ * message] ..." tells the model this was said aloud, which is why it
+ * rambles, repeats itself and has no punctuation the customer chose.
+ *
+ * @param array<string, mixed> $msg
+ */
+function voiceLabel(array $msg): string
+{
+    $transcript = trim((string) ($msg['ai_transcript'] ?? ''));
+    if ($transcript !== '') {
+        return '[voice message] ' . $transcript;
+    }
+
+    // No transcript, but the English label survived -- better than
+    // nothing, and it says where it came from.
+    $caption = trim((string) ($msg['ai_caption'] ?? ''));
+    if ($caption !== '') {
+        return '[voice message, summarised: ' . $caption . ']';
+    }
+
+    return '[sent a voice message]';
 }
 
 /**

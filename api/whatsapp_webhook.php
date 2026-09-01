@@ -567,6 +567,8 @@ function download_pending_media(array $pending): void
 
             if (str_starts_with($saved['mime'], 'image/')) {
                 caption_photo($item['id'], $saved['abs'], $saved['mime']);
+            } elseif (str_starts_with($saved['mime'], 'audio/')) {
+                transcribe_voice($item['id'], $saved['abs'], $saved['mime']);
             }
         } catch (Throwable $e) {
             // The row is already in the thread; api/media.php will try
@@ -602,6 +604,48 @@ function caption_photo(int $rowId, string $absPath, string $mime): void
         }
     } catch (Throwable $e) {
         error_log("[AI] could not caption photo for row {$rowId}: " . $e->getMessage());
+    }
+}
+
+/**
+ * Transcribes a voice note, and labels it in English.
+ *
+ * Same contract as caption_photo(), and for the same reason: this runs
+ * after the ack, and an unconfigured or failing AI must never cost us
+ * the message itself. A voice note with no transcript still plays, still
+ * appears in the thread, and can still be replied to.
+ *
+ * Two stored values, because they do two jobs. The transcript is what
+ * the customer actually said, in the language they said it, and is what
+ * api/draft.php reasons from -- translating it first would throw away
+ * detail before the model ever saw it. The caption is one English line
+ * for an agent scanning the thread.
+ */
+function transcribe_voice(int $rowId, string $absPath, string $mime): void
+{
+    if (!AI::isConfigured()) {
+        return;
+    }
+
+    try {
+        $result     = AI::client()->transcribe($absPath, $mime, getSetting('ai_transcribe_model'));
+        $transcript = $result['text'];
+
+        setMessageTranscript($rowId, mb_substr($transcript, 0, 8000));
+
+        // A message already in English is its own summary once it is
+        // short enough, so the extra model call is skipped. Anything
+        // else -- or anything long -- gets one line of English.
+        $isEnglish = str_starts_with($result['language'], 'en');
+        $caption   = ($isEnglish && mb_strlen($transcript) <= 160)
+            ? $transcript
+            : AI::client()->summariseInEnglish($transcript, getSetting('ai_model'));
+
+        if ($caption !== '') {
+            setMessageCaption($rowId, mb_substr($caption, 0, 300));
+        }
+    } catch (Throwable $e) {
+        error_log("[AI] could not transcribe voice note for row {$rowId}: " . $e->getMessage());
     }
 }
 

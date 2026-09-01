@@ -14,6 +14,7 @@
     const API_HEALTH = 'api/health.php';
     const API_SETTINGS = 'api/settings.php';
     const API_CATALOG = 'api/catalog.php';
+    const API_TRANSCRIBE = 'api/transcribe.php';
 
     const el = {
         list: document.getElementById('healthList'),
@@ -28,6 +29,10 @@
         aiModelList: document.getElementById('aiModelList'),
         aiModelHelp: document.getElementById('aiModelHelp'),
         aiPrompt: document.getElementById('aiPrompt'),
+        aiTranscribeModel: document.getElementById('aiTranscribeModel'),
+        transcribeBtn: document.getElementById('transcribeBtn'),
+        transcribeNote: document.getElementById('transcribeNote'),
+        transcribeResult: document.getElementById('transcribeResult'),
         aiSaveBtn: document.getElementById('aiSaveBtn'),
         aiResetBtn: document.getElementById('aiResetBtn'),
         // Catalog
@@ -248,6 +253,7 @@
 
             defaults = data.defaults || {};
             el.aiModel.value = data.settings.ai_model || '';
+            el.aiTranscribeModel.value = data.settings.ai_transcribe_model || '';
             el.aiPrompt.value = data.settings.ai_system_prompt || '';
 
             // Autocomplete from the account's real model list. Free text
@@ -280,6 +286,7 @@
                 method: 'PUT',
                 body: JSON.stringify({
                     ai_model: el.aiModel.value.trim(),
+                    ai_transcribe_model: el.aiTranscribeModel.value.trim(),
                     ai_system_prompt: el.aiPrompt.value,
                 }),
             });
@@ -288,6 +295,7 @@
                 // Show what was actually stored, so saving a blank prompt
                 // visibly comes back as the restored default.
                 el.aiModel.value = data.settings.ai_model || '';
+                el.aiTranscribeModel.value = data.settings.ai_transcribe_model || '';
                 el.aiPrompt.value = data.settings.ai_system_prompt || '';
                 toast('AI settings saved.');
             }
@@ -302,6 +310,7 @@
     el.aiResetBtn.addEventListener('click', () => {
         el.aiPrompt.value = defaults.ai_system_prompt || '';
         el.aiModel.value = defaults.ai_model || '';
+        el.aiTranscribeModel.value = defaults.ai_transcribe_model || '';
         toast('Defaults restored — press Save to keep them.');
     });
 
@@ -392,7 +401,72 @@
         }
     });
 
+    // ------------------------------------------------------------------
+    // Backfilling transcripts
+    //
+    // Only ever about catching up: voice notes that arrive from now on
+    // are transcribed by the inbound webhook. Batched and manual because
+    // every one is a paid model call and this app has no job queue to
+    // pace them with.
+    // ------------------------------------------------------------------
+
+    async function loadTranscribeStatus() {
+        try {
+            const data = await api(API_TRANSCRIBE);
+            if (!data) return;
+
+            if (!data.available) {
+                el.transcribeNote.textContent = 'Needs an OpenAI API key';
+                el.transcribeBtn.disabled = true;
+                return;
+            }
+            if (data.pending === 0) {
+                el.transcribeNote.textContent = 'Nothing waiting — all voice notes are transcribed';
+                el.transcribeBtn.disabled = true;
+                return;
+            }
+            el.transcribeNote.textContent =
+                `${data.pending} waiting · does ${data.batch} per press, each costs a model call`;
+            el.transcribeBtn.disabled = false;
+        } catch (err) {
+            el.transcribeNote.textContent = err.message;
+        }
+    }
+
+    el.transcribeBtn.addEventListener('click', async () => {
+        el.transcribeBtn.disabled = true;
+        el.transcribeResult.hidden = false;
+        applyResult(el.transcribeResult, {
+            label: 'Transcribing',
+            status: 'pending',
+            summary: 'Sending voice notes to OpenAI…',
+            detail: [],
+            hint: '',
+        });
+
+        try {
+            const data = await api(API_TRANSCRIBE, { method: 'POST' });
+            if (data) {
+                applyResult(el.transcribeResult, {
+                    label: 'Transcribing',
+                    // Skipped items are not a failure of the run: a file
+                    // Meta has since expired can never be transcribed,
+                    // and saying so is the useful part.
+                    status: data.done > 0 ? 'ok' : (data.skipped.length ? 'warn' : 'ok'),
+                    summary: `${data.done} transcribed, ${data.pending} still waiting`,
+                    detail: data.skipped,
+                    hint: data.pending > 0 ? 'Press again to do the next batch.' : '',
+                });
+            }
+        } catch (err) {
+            applyError(el.transcribeResult, 'Transcribing', err.message);
+        } finally {
+            loadTranscribeStatus();
+        }
+    });
+
     loadSettings();
     loadCatalog();
+    loadTranscribeStatus();
     runAll();
 })();

@@ -240,6 +240,118 @@ final class AI
     }
 
     /**
+     * File extensions the transcription endpoint accepts.
+     *
+     * Checked here rather than left to a 400, because the one WhatsApp
+     * format that is missing -- AMR, which older Android phones still
+     * record -- is a thing the CRM should report calmly rather than
+     * retry. A voice note WhatsApp delivers as audio/ogg (Opus inside)
+     * is the common case and is supported.
+     */
+    private const TRANSCRIBE_EXTENSIONS = [
+        'flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm',
+    ];
+
+    /**
+     * Transcribes a voice note, in whatever language it was spoken.
+     *
+     * No `language` is sent: Whisper detects it, and a sales inbox gets
+     * Arabic, Hindi, Tagalog and English in the same afternoon. The
+     * detected language comes back too, which is what lets the caller
+     * skip a needless translation call for a message already in English.
+     *
+     * Multipart, so this cannot go through request() -- same reason
+     * WhatsApp::uploadMedia() has its own curl handle.
+     *
+     * @return array{text: string, language: string}
+     */
+    public function transcribe(string $absPath, string $mime, string $model): array
+    {
+        if (!is_file($absPath) || !is_readable($absPath)) {
+            throw new AIException('That voice message is no longer on disk.', 422);
+        }
+
+        $ext = strtolower(pathinfo($absPath, PATHINFO_EXTENSION));
+        if (!in_array($ext, self::TRANSCRIBE_EXTENSIONS, true)) {
+            throw new AIException(
+                'Voice notes in .' . $ext . ' cannot be transcribed — OpenAI accepts '
+                . implode(', ', self::TRANSCRIBE_EXTENSIONS) . '.',
+                422
+            );
+        }
+
+        $ch = curl_init($this->baseUrl . '/audio/transcriptions');
+        curl_setopt_array($ch, [
+            CURLOPT_POST       => true,
+            CURLOPT_POSTFIELDS => [
+                'file'  => new CURLFile($absPath, $mime !== '' ? $mime : 'audio/ogg', basename($absPath)),
+                'model' => $model,
+                // Carries the detected language beside the text, which a
+                // plain response does not.
+                'response_format' => 'verbose_json',
+            ],
+            CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $this->apiKey],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            // Audio is slower than chat, and a two-minute voice note is
+            // not unusual on WhatsApp.
+            CURLOPT_TIMEOUT        => 180,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+
+        $raw    = curl_exec($ch);
+        $errno  = curl_errno($ch);
+        $error  = curl_error($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($errno !== 0) {
+            error_log("[AI] transcription curl error ({$errno}): {$error}");
+            throw new AIException('Could not reach OpenAI to transcribe that voice message.', 502);
+        }
+        if ($status >= 400) {
+            error_log("[AI] POST /audio/transcriptions -> HTTP {$status}: {$raw}");
+            throw new AIException(self::errorMessage((string) $raw, $status), $status);
+        }
+
+        $decoded = json_decode((string) $raw, true);
+        $text    = is_array($decoded) ? trim((string) ($decoded['text'] ?? '')) : '';
+
+        if ($text === '') {
+            // Silence, or speech the model could not make out. Not an
+            // error worth retrying, but not a transcript either.
+            throw new AIException('That voice message came back empty — it may be silent.', 422);
+        }
+
+        return [
+            'text'     => $text,
+            'language' => is_array($decoded) ? strtolower((string) ($decoded['language'] ?? '')) : '',
+        ];
+    }
+
+    /**
+     * One short English line saying what a voice note was about.
+     *
+     * Shown under the player, so an agent scanning a thread does not have
+     * to press play on six messages in a language they do not read. The
+     * full transcript is what the draft actually reasons from; this is
+     * the label.
+     */
+    public function summariseInEnglish(string $transcript, string $model): string
+    {
+        return $this->chat([
+            [
+                'role'    => 'system',
+                'content' => 'You summarise voice messages sent to a packaging company\'s sales '
+                           . 'inbox. Reply with ONE short sentence in ENGLISH saying what the '
+                           . 'caller wants, including any quantity, size or product named. '
+                           . 'Translate if the message is in another language. No preamble.',
+            ],
+            ['role' => 'user', 'content' => $transcript],
+        ], $model, 0.2, 150);
+    }
+
+    /**
      * Lists the model ids available to this key, so the settings page can
      * offer real choices instead of a hardcoded list that goes stale.
      *

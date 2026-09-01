@@ -99,6 +99,18 @@ README** — the template stays placeholders-only.
   first-contact insert, and is an agent's to edit after that: a number
   can be a roaming SIM, and a prefix table must not overwrite what a
   person knows.
+- **A voice note stores two things, and they are not interchangeable.**
+  `ai_transcript` is what was said, in the language it was said, and is
+  what `api/draft.php` reasons from — translating before the model sees
+  it throws away detail. `ai_caption` is one English line for the UI and
+  the sidebar preview. Transcription is never fatal, same rule as
+  captioning: an unconfigured or failing AI must not cost us the message.
+  The transcription model is its own setting; the chat model cannot do
+  audio.
+- **Backfills are manual and batched.** `api/transcribe.php` does five
+  per press from a settings button. Every transcription is a paid call
+  and there is no job queue here to pace one with, so nothing retries on
+  its own and a run that finds nothing pending makes no calls at all.
 - **Photos reach the model two ways.** The most recent `DRAFT_IMAGE_LIMIT`
   photos are attached as real images; every photo also gets a one-line
   `ai_caption` on arrival, used for the sidebar preview and for older

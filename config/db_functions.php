@@ -254,7 +254,7 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
     $query = [
         'session_id' => 'eq.' . $sessionId,
         'select'     => 'id,session_id,message,created_at,direction,wa_status,msg_type,'
-                      . 'media_path,media_mime,media_size,media_name,ai_caption,'
+                      . 'media_path,media_mime,media_size,media_name,ai_caption,ai_transcript,'
                       . 'wa_buttons,wa_template,wa_source,'
                       . 'latitude,longitude,place_name,place_address',
         'limit'      => (string) $limit,
@@ -305,6 +305,7 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
             'media_size'    => isset($row['media_size']) ? (int) $row['media_size'] : null,
             'media_name'    => $row['media_name'] ?? null,
             'ai_caption'    => $row['ai_caption'] ?? null,
+            'ai_transcript' => $row['ai_transcript'] ?? null,
 
             // The option labels of a quick-reply question, so the thread
             // shows what the customer was actually offered rather than
@@ -832,6 +833,11 @@ them to edit and send.
   say you are checking with the team rather than guessing.
 PROMPT,
 
+    // Speech-to-text for voice notes. Its own setting because the chat
+    // model cannot transcribe audio, and a constant here would go stale
+    // exactly like a hardcoded chat model would.
+    'ai_transcribe_model' => 'whisper-1',
+
     // The catalog an agent can send in one click. Written by
     // api/catalog.php, which stores the file itself; never by
     // api/settings.php -- see SETTING_AGENT_EDITABLE below.
@@ -851,7 +857,7 @@ PROMPT,
  * catalog is uploaded through api/catalog.php instead, which stores the
  * bytes and derives the path itself.
  */
-const SETTING_AGENT_EDITABLE = ['ai_model', 'ai_system_prompt'];
+const SETTING_AGENT_EDITABLE = ['ai_model', 'ai_system_prompt', 'ai_transcribe_model'];
 
 /**
  * Reads every editable setting, with defaults filled in.
@@ -919,6 +925,59 @@ function setSetting(string $key, string $value): void
 function setMessageCaption(int $id, string $caption): void
 {
     Supabase::client()->patch('n8n_chat_history', ['id' => 'eq.' . $id], ['ai_caption' => $caption]);
+}
+
+/**
+ * Stores what a voice note said, in the language it was spoken.
+ *
+ * Beside setMessageCaption() rather than folded into it: the caption is
+ * the one-line English label the UI shows, this is the full text the
+ * draft reasons from, and a row can legitimately have one without the
+ * other.
+ */
+function setMessageTranscript(int $id, string $transcript): void
+{
+    Supabase::client()->patch('n8n_chat_history', ['id' => 'eq.' . $id], ['ai_transcript' => $transcript]);
+}
+
+/**
+ * Voice notes on disk that have never been transcribed.
+ *
+ * Powers the settings-page backfill for messages that arrived before
+ * transcription existed. Rows whose audio was never downloaded are
+ * skipped -- there is nothing to send.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getUntranscribedVoiceNotes(int $limit = 10): array
+{
+    $result = Supabase::client()->get('n8n_chat_history', [
+        'msg_type'      => 'eq.audio',
+        'ai_transcript' => 'is.null',
+        'media_path'    => 'not.is.null',
+        'select'        => 'id,media_path,media_mime',
+        'order'         => 'id.desc',
+        'limit'         => (string) max(1, min(50, $limit)),
+    ]);
+
+    return $result['rows'];
+}
+
+/**
+ * How many voice notes are still waiting, so the settings page can say
+ * whether pressing the button again would do anything.
+ */
+function countUntranscribedVoiceNotes(): int
+{
+    $result = Supabase::client()->get('n8n_chat_history', [
+        'msg_type'      => 'eq.audio',
+        'ai_transcript' => 'is.null',
+        'media_path'    => 'not.is.null',
+        'select'        => 'id',
+        'limit'         => '500',
+    ]);
+
+    return count($result['rows']);
 }
 
 /**

@@ -456,6 +456,44 @@ a customer a picture; without one, the avatar is their initials.
   WhatsApp when Send is pressed. The file's mime is re-read from its own
   bytes with `finfo_file()`, never taken from the browser.
 
+### Voice messages
+
+Every voice note is transcribed on arrival, in whatever language it was
+spoken — a sales inbox gets Arabic, Hindi and English in the same
+afternoon, and Whisper detects the language rather than being told.
+
+Two things are stored, because they do two different jobs:
+
+- **The transcript**, in the original language. This is what
+  `api/draft.php` hands the model, untranslated, so it reasons from the
+  customer's own words rather than a summary of them.
+- **A one-line English summary**, shown under the player in the thread
+  and as the conversation's preview in the sidebar. The point is
+  scanning: a thread with six voice notes in a language an agent does not
+  read is otherwise six things they have to press play on. **Show
+  transcript** unfolds the full text.
+
+If the message is already short and in English, the summary is the
+transcript and the extra model call is skipped.
+
+Transcription is never fatal, exactly like photo captioning: a voice note
+the AI could not hear still plays, still appears in the thread, and can
+still be replied to. A `.amr` recording — what some older Android phones
+produce — is reported as unsupported rather than retried, because OpenAI
+does not accept that container.
+
+The model is its own setting (**Voice transcription model**, default
+`whisper-1`) because the chat model cannot do audio.
+
+#### Voice notes that arrived before this existed
+
+**Settings → Transcribe old voice messages** backfills them, five per
+press, saying how many are left. It is a button rather than something
+automatic because every transcription is a paid model call and this app
+has no job queue to pace one with. Pressing it when nothing is pending
+does nothing and costs nothing. A voice note whose audio Meta has since
+expired is skipped with the reason, not retried.
+
 ### The 24-hour window, and templates
 
 WhatsApp only allows a free-form reply within 24 hours of the customer's

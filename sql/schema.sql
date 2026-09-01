@@ -138,7 +138,16 @@ alter table public.n8n_chat_history
     -- the file lands. Used for the sidebar preview and for older photos
     -- that fall outside the window where the real image is attached to a
     -- draft. Null means "not captioned" -- the AI may be unconfigured.
+    -- For a photo: the vision model's one-line description. For a voice
+    -- note: a one-line ENGLISH summary of what was said, so an agent can
+    -- scan a thread without pressing play on six messages in a language
+    -- they do not read. Null means "not labelled" -- the AI may be
+    -- unconfigured, and that must never cost us the message.
     add column if not exists ai_caption    text,
+    -- What a voice note actually said, in the language it was spoken.
+    -- Separate from ai_caption because they do different jobs: this is
+    -- what api/draft.php reasons from, the caption is what the UI shows.
+    add column if not exists ai_transcript text,
     add column if not exists media_path    text,
     add column if not exists media_mime    text,
     add column if not exists media_size    bigint,
@@ -301,7 +310,7 @@ as $$
             -- far better preview than the word "Photo".
             when 'image'    then '📷 ' || coalesce(nullif(lm.ai_caption, ''), 'Photo')
             when 'video'    then '🎥 Video'
-            when 'audio'    then '🎤 Voice message'
+            when 'audio'    then '🎤 ' || coalesce(nullif(lm.ai_caption, ''), 'Voice message')
             when 'document' then '📄 ' || coalesce(lm.media_name, 'Document')
             when 'location' then '📍 Location'
             when 'sticker'  then '🙂 Sticker'

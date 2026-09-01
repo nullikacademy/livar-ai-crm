@@ -918,7 +918,9 @@
         audio.controls = true;
         audio.preload = 'metadata';
         audio.src = msg.media_url;
+        audio.addEventListener('error', () => replaceWithMissingMedia(bubble, audio, 'Voice message'));
         bubble.appendChild(audio);
+        appendVoiceSummary(bubble, msg);
         appendCaption(bubble, msg.content);
     }
 
@@ -1031,6 +1033,55 @@
         note.className = 'bubble__unsupported';
         note.textContent = `${label} — no longer available.`;
         return note;
+    }
+
+    /**
+     * The English one-liner under a voice note, and the full transcript
+     * behind a toggle.
+     *
+     * The point is scanning: a thread with six voice notes in a language
+     * an agent does not read is otherwise six things they have to press
+     * play on. The summary is always English; the transcript is what was
+     * actually said, in whatever language it was said, and stays folded
+     * away because it is usually long and rambling.
+     */
+    function appendVoiceSummary(bubble, msg) {
+        const summary = (msg.ai_caption || '').trim();
+        const transcript = (msg.ai_transcript || '').trim();
+        if (!summary && !transcript) return;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'bubble__voice';
+
+        if (summary) {
+            const line = document.createElement('div');
+            line.className = 'bubble__voice-summary';
+            line.textContent = summary;
+            wrap.appendChild(line);
+        }
+
+        // Only worth a toggle when it says more than the summary already
+        // does — otherwise it is a control that reveals the same words.
+        if (transcript && transcript !== summary) {
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'bubble__voice-toggle';
+            toggle.textContent = 'Show transcript';
+
+            const full = document.createElement('div');
+            full.className = 'bubble__voice-transcript';
+            full.textContent = transcript;
+            full.hidden = true;
+
+            toggle.addEventListener('click', () => {
+                full.hidden = !full.hidden;
+                toggle.textContent = full.hidden ? 'Show transcript' : 'Hide transcript';
+            });
+
+            wrap.append(toggle, full);
+        }
+
+        bubble.appendChild(wrap);
     }
 
     function appendCaption(bubble, caption) {
