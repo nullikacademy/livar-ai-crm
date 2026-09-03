@@ -536,6 +536,13 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     display: flex;
     max-width: 100%;
     animation: bubbleIn var(--t-base) var(--ease) both;
+    /* The row carries three things: the bubble, the react button beside
+       it, and the reaction chips below. Wrapping is what lets the chips
+       take a line of their own (width: 100%) while the button stays on
+       the bubble's line -- without it the chips sat alongside the bubble
+       instead of under it. */
+    flex-wrap: wrap;
+    align-items: flex-end;
 }
 .bubble-row--customer { justify-content: flex-start; }
 .bubble-row--ours { justify-content: flex-end; }
@@ -778,6 +785,9 @@ input, textarea { -webkit-appearance: none; appearance: none; }
    message rather than as a message of its own. */
 .bubble-row { position: relative; }
 .bubble__reactions {
+    /* After the bubble and the react button, on a line of its own. */
+    order: 2;
+    width: 100%;
     display: flex;
     gap: 3px;
     margin-top: -9px;
@@ -796,11 +806,18 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 
 /* The react button. Hidden until the row is hovered on a mouse, always
-   there on touch, where there is no hover to reveal it with. */
+   there on touch, where there is no hover to reveal it with.
+
+   A flex item beside the bubble, NOT absolutely positioned: it used to
+   sit at `left: calc(100% + 6px)` of a row that spans the full width of
+   the thread, which put it past the right edge of the screen at every
+   viewport size -- present in the DOM, findable in the inspector, and
+   impossible to click. */
 .bubble__react {
-    position: absolute;
-    bottom: 4px;
-    left: calc(100% + 6px);
+    order: 1;
+    flex: 0 0 auto;
+    align-self: flex-end;
+    margin: 0 0 3px 6px;
     width: 26px;
     height: 26px;
     border-radius: var(--r-full);
