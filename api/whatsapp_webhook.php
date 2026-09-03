@@ -191,24 +191,70 @@ function contact_index(array $contacts): array
             continue;
         }
         $entry = [
-            'name'     => (string) ($contact['profile']['name'] ?? ''),
-            'username' => (string) ($contact['username'] ?? $contact['profile']['username'] ?? ''),
+            'name'     => trim((string) ($contact['profile']['name'] ?? '')),
+            'username' => trim((string) ($contact['username'] ?? $contact['profile']['username'] ?? '')),
         ];
         if ($entry['name'] === '' && $entry['username'] === '') {
             continue;
         }
 
-        $waId = normalizeWaId((string) ($contact['wa_id'] ?? ''));
-        if ($waId !== '') {
-            $index[$waId] = $entry;
-        }
-        $userId = normalizeWaUserId((string) ($contact['user_id'] ?? ''));
-        if ($userId !== '') {
-            $index[$userId] = $entry;
+        // Every entry is also filed under a sentinel key, so an entry that
+        // names nobody in particular -- Meta sending a profile with no
+        // identifier beside it -- is still reachable by contact_for()'s
+        // single-contact fallback. "\0" cannot collide with a normalised
+        // identifier, both normalisers strip it.
+        $index["\0" . count($index)] = $entry;
+
+        // Then under every identifier it carries, in every normalisation a
+        // message might quote it in. `wa_id` is not reliably a phone
+        // number any more -- Meta may put a BSUID in it -- and running
+        // that through normalizeWaId() alone would file the name under a
+        // mangled run of digits that no message ever matches, silently
+        // costing us the name.
+        foreach ([$contact['wa_id'] ?? '', $contact['user_id'] ?? ''] as $raw) {
+            $raw = (string) $raw;
+            if ($raw === '') {
+                continue;
+            }
+            foreach ([normalizeWaId($raw), normalizeWaUserId($raw)] as $key) {
+                if ($key !== '') {
+                    $index[$key] = $entry;
+                }
+            }
         }
     }
 
     return $index;
+}
+
+/**
+ * The contact entry belonging to one message.
+ *
+ * Falls back to the only contact in the batch when nothing matched by key.
+ * Meta sends one contacts[] entry per sender, so a single entry beside a
+ * message is unambiguously that sender's -- and guessing right here is the
+ * difference between a named conversation and "Unnamed customer". With
+ * two or more senders in the batch there is nothing safe to guess, so the
+ * message goes unnamed rather than wearing someone else's name.
+ *
+ * @param array<string, array{name: string, username: string}> $contacts
+ * @param array{wa_id: string, wa_user_id: string} $identity
+ * @return array{name: string, username: string}
+ */
+function contact_for(array $contacts, array $identity): array
+{
+    foreach ([$identity['wa_user_id'], $identity['wa_id']] as $key) {
+        if ($key !== '' && isset($contacts[$key])) {
+            return $contacts[$key];
+        }
+    }
+
+    $unique = array_values(array_unique($contacts, SORT_REGULAR));
+    if (count($unique) === 1) {
+        return $unique[0];
+    }
+
+    return ['name' => '', 'username' => ''];
 }
 
 /**
@@ -225,12 +271,21 @@ function contact_index(array $contacts): array
  */
 function message_identity(array $message): array
 {
-    return [
-        'wa_id'      => normalizeWaId((string) ($message['from'] ?? '')),
-        'wa_user_id' => normalizeWaUserId(
-            (string) ($message['user_id'] ?? $message['from_user_id'] ?? '')
-        ),
-    ];
+    $from   = trim((string) ($message['from'] ?? ''));
+    $userId = normalizeWaUserId(
+        (string) ($message['user_id'] ?? $message['from_user_id'] ?? '')
+    );
+
+    // `from` is not reliably a phone number either: Meta may put a BSUID
+    // there. Digits mean a number; anything else is an identifier, and
+    // normalizeWaId() would turn it into digits that could collide with a
+    // real customer's number.
+    $digits = preg_replace('/[^A-Za-z0-9]+/', '', $from) ?? '';
+    if ($from !== '' && !ctype_digit($digits)) {
+        return ['wa_id' => '', 'wa_user_id' => $userId !== '' ? $userId : normalizeWaUserId($from)];
+    }
+
+    return ['wa_id' => normalizeWaId($from), 'wa_user_id' => $userId];
 }
 
 /**
@@ -257,11 +312,7 @@ function handle_message(array $message, array $contacts): ?array
         return null;
     }
 
-    // Whichever identity the message carried is the one contacts[] is
-    // indexed under.
-    $contact = $contacts[$identity['wa_user_id']]
-            ?? $contacts[$identity['wa_id']]
-            ?? ['name' => '', 'username' => ''];
+    $contact = contact_for($contacts, $identity);
     $identity['wa_username'] = $contact['username'];
 
     $customer  = getOrCreateCustomerByIdentity($identity, $contact['name']);
@@ -593,6 +644,13 @@ function handle_state_sync(array $entries): void
         $contact = is_array($entry['contact'] ?? null) ? $entry['contact'] : [];
         $waId    = normalizeWaId((string) ($contact['phone_number'] ?? ''));
         if ($waId === '') {
+            // livar_wa_contact is keyed on the number, so a contact
+            // without one cannot be stored. Whether Meta puts a WhatsApp
+            // username contact in here at all is not documented, and
+            // guessing a shape would be worse than not handling it -- so
+            // record what actually arrives instead. A run of these in the
+            // log is the evidence for keying this table on a BSUID too.
+            error_log('[WhatsApp] state_sync contact with no phone number: ' . json_encode($contact));
             continue;
         }
 

@@ -545,6 +545,13 @@ function getCustomerByWaUserId(string $userId): ?array
  * carrying a BSUID the moment Meta enables it. Either way one row already
  * exists and simply lacks the other half.
  *
+ * The profile name is filled in here too, and for the same reason. A
+ * customer can be created by something that carries no name at all -- an
+ * echo of a message the business sent from their phone creates the row
+ * with nothing but an identity on it -- and the name is only ever offered
+ * on the NEXT inbound message. Applying it only at creation left those
+ * customers reading "Unnamed customer" forever.
+ *
  * Only ever writes a column that is currently empty. A number or a name
  * already on the row was either learned earlier or typed by an agent, and
  * a webhook is not the authority on it.
@@ -556,8 +563,8 @@ function getCustomerByWaUserId(string $userId): ?array
 function linkCustomerIdentity(array $customer, array $identity): array
 {
     $patch = [];
-    foreach (['wa_id', 'wa_user_id', 'wa_username'] as $field) {
-        $value = $identity[$field] ?? '';
+    foreach (['wa_id', 'wa_user_id', 'wa_username', 'wa_profile_name'] as $field) {
+        $value = trim($identity[$field] ?? '');
         if ($value !== '' && ($customer[$field] ?? null) === null) {
             $patch[$field] = $value;
         }
@@ -624,7 +631,14 @@ function getOrCreateCustomerByIdentity(array $identity, string $profileName = ''
     $waId     = normalizeWaId($identity['wa_id'] ?? '');
     $userId   = normalizeWaUserId($identity['wa_user_id'] ?? '');
     $username = trim($identity['wa_username'] ?? '');
-    $identity = ['wa_id' => $waId, 'wa_user_id' => $userId, 'wa_username' => $username];
+    $identity = [
+        'wa_id'           => $waId,
+        'wa_user_id'      => $userId,
+        'wa_username'     => $username,
+        // Carried alongside the identities so an existing nameless row can
+        // learn it too, not just a row being created here.
+        'wa_profile_name' => trim($profileName),
+    ];
 
     if ($waId === '' && $userId === '') {
         throw new SupabaseException('A WhatsApp message arrived without a usable sender id.', 422);
