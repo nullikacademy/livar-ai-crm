@@ -230,7 +230,8 @@ function checkSchema(): array
                             . 'media_path,media_mime,media_size,media_name,latitude,longitude,place_name,place_address,'
                             . 'ai_caption,ai_transcript,wa_buttons,wa_template,wa_source,'
                             . 'wa_reaction,wa_reaction_out',
-        'livar_customer'   => 'id,wa_id,wa_profile_name,last_inbound_at,avatar_path,label,wa_contact_name',
+        'livar_customer'   => 'id,wa_id,wa_profile_name,last_inbound_at,avatar_path,label,wa_contact_name,'
+                            . 'wa_user_id,wa_username',
         // Its own table, so a missing one is a missing probe rather than
         // a missing column -- PostgREST 404s the relation instead.
         'livar_wa_contact' => 'wa_id,full_name,first_name',
@@ -266,7 +267,8 @@ function checkSchema(): array
         Supabase::client()->rpc(
             'get_customers_with_preview',
             ['p_search' => '', 'p_limit' => 1, 'p_offset' => 0],
-            ['select' => 'session_id,wa_id,last_inbound_at,last_activity_at,avatar_path,label,wa_contact_name']
+            ['select' => 'session_id,wa_id,last_inbound_at,last_activity_at,avatar_path,label,'
+                       . 'wa_contact_name,wa_username']
         );
         $detail[] = 'get_customers_with_preview: current version';
     } catch (SupabaseException $e) {

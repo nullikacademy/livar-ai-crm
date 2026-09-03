@@ -49,9 +49,12 @@ try {
         json_error('Customer not found', 404);
     }
 
-    $waId = normalizeWaId((string) ($customer['wa_id'] ?? ''));
-    if ($waId === '') {
-        json_error('This customer has no WhatsApp number, so there is nothing to send to.', 422);
+    // The number when we have one, otherwise the business-scoped user id
+    // -- the only address a customer who reached us through a WhatsApp
+    // username ever has. WhatsApp::send() puts it in the right field.
+    $to = customerAddress($customer);
+    if ($to === '') {
+        json_error('This customer has no WhatsApp address, so there is nothing to send to.', 422);
     }
 
     // The window is enforced here, not just shown in the UI. A template
@@ -66,13 +69,13 @@ try {
     }
 
     $result = match ($type) {
-        'text'     => sendTextMessage($waId, $sessionId, $text),
-        'location' => sendLocationMessage($waId, $sessionId, $data),
-        'template' => sendTemplateMessage($waId, $sessionId, $data),
-        'buttons'  => sendButtonsMessage($waId, $sessionId, $text, $data),
-        'catalog'  => sendCatalogMessage($waId, $sessionId, $text),
-        'reaction' => sendReactionMessage($waId, $data),
-        default    => sendMediaMessage($waId, $sessionId, $type, $text, input_str($data, 'media_ref')),
+        'text'     => sendTextMessage($to, $sessionId, $text),
+        'location' => sendLocationMessage($to, $sessionId, $data),
+        'template' => sendTemplateMessage($to, $sessionId, $data),
+        'buttons'  => sendButtonsMessage($to, $sessionId, $text, $data),
+        'catalog'  => sendCatalogMessage($to, $sessionId, $text),
+        'reaction' => sendReactionMessage($to, $data),
+        default    => sendMediaMessage($to, $sessionId, $type, $text, input_str($data, 'media_ref')),
     };
 
     json_response(['success' => true, 'message' => $result]);
@@ -96,13 +99,13 @@ try {
  *
  * @return array<string, mixed> the stored row, frontend-shaped
  */
-function sendTextMessage(string $waId, string $sessionId, string $text): array
+function sendTextMessage(string $to, string $sessionId, string $text): array
 {
     if ($text === '') {
         json_error('There is nothing to send.', 422);
     }
 
-    $response = WhatsApp::client()->sendText($waId, $text);
+    $response = WhatsApp::client()->sendText($to, $text);
 
     return storeOutbound($sessionId, [
         'msg_type'      => 'text',
@@ -117,7 +120,7 @@ function sendTextMessage(string $waId, string $sessionId, string $text): array
  * @param array<string, mixed> $data
  * @return array<string, mixed>
  */
-function sendLocationMessage(string $waId, string $sessionId, array $data): array
+function sendLocationMessage(string $to, string $sessionId, array $data): array
 {
     if (!isset($data['latitude'], $data['longitude']) || !is_numeric($data['latitude']) || !is_numeric($data['longitude'])) {
         json_error('A latitude and longitude are required to send a location.', 422);
@@ -133,7 +136,7 @@ function sendLocationMessage(string $waId, string $sessionId, array $data): arra
     $name    = input_str($data, 'place_name');
     $address = input_str($data, 'place_address');
 
-    $response = WhatsApp::client()->sendLocation($waId, $lat, $lng, $name, $address);
+    $response = WhatsApp::client()->sendLocation($to, $lat, $lng, $name, $address);
 
     return storeOutbound($sessionId, [
         'msg_type'      => 'location',
@@ -160,7 +163,7 @@ function sendLocationMessage(string $waId, string $sessionId, array $data): arra
  * @param array<string, mixed> $data
  * @return array<string, mixed>
  */
-function sendReactionMessage(string $waId, array $data): array
+function sendReactionMessage(string $to, array $data): array
 {
     $targetId = input_str($data, 'wa_message_id');
     $emoji    = isset($data['emoji']) && is_string($data['emoji']) ? trim($data['emoji']) : '';
@@ -169,7 +172,7 @@ function sendReactionMessage(string $waId, array $data): array
         json_error('There is no message to react to.', 422);
     }
 
-    WhatsApp::client()->sendReaction($waId, $targetId, $emoji);
+    WhatsApp::client()->sendReaction($to, $targetId, $emoji);
 
     // Recorded only after WhatsApp accepted it, so the thread never shows
     // a reaction the customer's phone never got.
@@ -196,7 +199,7 @@ function sendReactionMessage(string $waId, array $data): array
  * @param array<string, mixed> $data
  * @return array<string, mixed>
  */
-function sendTemplateMessage(string $waId, string $sessionId, array $data): array
+function sendTemplateMessage(string $to, string $sessionId, array $data): array
 {
     $name     = input_str($data, 'template');
     $language = input_str($data, 'language');
@@ -219,7 +222,7 @@ function sendTemplateMessage(string $waId, string $sessionId, array $data): arra
         $params[] = preg_replace('/\s+/u', ' ', $value) ?? $value;
     }
 
-    $response = WhatsApp::client()->sendTemplate($waId, $name, $language, $params);
+    $response = WhatsApp::client()->sendTemplate($to, $name, $language, $params);
 
     // The preview the picker built, which is what the customer will see.
     // Bounded: it is text from the client, and a chat row is not the
@@ -272,7 +275,7 @@ function renderTemplateBody(string $body, array $params): string
  * @param array<string, mixed> $data
  * @return array<string, mixed>
  */
-function sendButtonsMessage(string $waId, string $sessionId, string $text, array $data): array
+function sendButtonsMessage(string $to, string $sessionId, string $text, array $data): array
 {
     if ($text === '') {
         json_error('Write the question first.', 422);
@@ -293,7 +296,7 @@ function sendButtonsMessage(string $waId, string $sessionId, string $text, array
         json_error('Add at least one answer button.', 422);
     }
 
-    $response = WhatsApp::client()->sendButtons($waId, $text, $buttons, input_str($data, 'footer'));
+    $response = WhatsApp::client()->sendButtons($to, $text, $buttons, input_str($data, 'footer'));
 
     return storeOutbound($sessionId, [
         'msg_type'      => 'buttons',
@@ -313,7 +316,7 @@ function sendButtonsMessage(string $waId, string $sessionId, string $text, array
  *
  * @return array<string, mixed>
  */
-function sendCatalogMessage(string $waId, string $sessionId, string $caption): array
+function sendCatalogMessage(string $to, string $sessionId, string $caption): array
 {
     $catalog = getCatalogFile();
     if ($catalog === null) {
@@ -327,7 +330,7 @@ function sendCatalogMessage(string $waId, string $sessionId, string $caption): a
 
     $mediaId  = WhatsApp::client()->uploadMedia($catalog['abs'], $catalog['mime']);
     $response = WhatsApp::client()->sendMedia(
-        $waId,
+        $to,
         $sendType,
         $mediaId,
         $caption,
@@ -354,7 +357,7 @@ function sendCatalogMessage(string $waId, string $sessionId, string $caption): a
  *
  * @return array<string, mixed>
  */
-function sendMediaMessage(string $waId, string $sessionId, string $type, string $caption, string $mediaRef): array
+function sendMediaMessage(string $to, string $sessionId, string $type, string $caption, string $mediaRef): array
 {
     if ($mediaRef === '') {
         json_error('Unsupported message type: ' . $type, 422);
@@ -373,7 +376,7 @@ function sendMediaMessage(string $waId, string $sessionId, string $type, string 
 
     $mediaId  = WhatsApp::client()->uploadMedia($staged['abs'], $mime);
     $response = WhatsApp::client()->sendMedia(
-        $waId,
+        $to,
         $sendType,
         $mediaId,
         $caption,

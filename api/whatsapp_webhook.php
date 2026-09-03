@@ -105,23 +105,18 @@ function handle_payload(array $payload): array
                 continue;
             }
 
-            // contacts[] carries the WhatsApp profile name, keyed by the
-            // same wa_id the messages use.
-            $profileNames = [];
-            foreach (($value['contacts'] ?? []) as $contact) {
-                $waId = normalizeWaId((string) ($contact['wa_id'] ?? ''));
-                $name = (string) ($contact['profile']['name'] ?? '');
-                if ($waId !== '' && $name !== '') {
-                    $profileNames[$waId] = $name;
-                }
-            }
+            // contacts[] carries the WhatsApp profile name and, for a
+            // sender who has not shared their number, the @username. It is
+            // indexed under BOTH identities because a message names its
+            // sender by whichever one it has -- see contact_index().
+            $contacts = contact_index($value['contacts'] ?? []);
 
             foreach (($value['messages'] ?? []) as $message) {
                 if (!is_array($message)) {
                     continue;
                 }
                 try {
-                    $row = handle_message($message, $profileNames);
+                    $row = handle_message($message, $contacts);
                     if ($row !== null) {
                         $pending[] = $row;
                     }
@@ -177,30 +172,99 @@ function handle_payload(array $payload): array
 }
 
 /**
+ * Indexes contacts[] under every identity a message might name them by.
+ *
+ * A contact entry can carry a phone-based wa_id, a business-scoped
+ * user_id, or both, and the message that follows quotes whichever one
+ * Meta decided to send. Indexing under both is what keeps a username
+ * adopter's profile name attached to their messages.
+ *
+ * @param array<int, mixed> $contacts
+ * @return array<string, array{name: string, username: string}>
+ */
+function contact_index(array $contacts): array
+{
+    $index = [];
+
+    foreach ($contacts as $contact) {
+        if (!is_array($contact)) {
+            continue;
+        }
+        $entry = [
+            'name'     => (string) ($contact['profile']['name'] ?? ''),
+            'username' => (string) ($contact['username'] ?? $contact['profile']['username'] ?? ''),
+        ];
+        if ($entry['name'] === '' && $entry['username'] === '') {
+            continue;
+        }
+
+        $waId = normalizeWaId((string) ($contact['wa_id'] ?? ''));
+        if ($waId !== '') {
+            $index[$waId] = $entry;
+        }
+        $userId = normalizeWaUserId((string) ($contact['user_id'] ?? ''));
+        if ($userId !== '') {
+            $index[$userId] = $entry;
+        }
+    }
+
+    return $index;
+}
+
+/**
+ * Pulls the sender's identity out of an inbound message.
+ *
+ * `from` is the phone number and is no longer guaranteed: a WhatsApp
+ * username adopter is identified only by a business-scoped user id, which
+ * Meta puts in `user_id` (older payloads: `from_user_id`) and sends on
+ * every inbound message regardless. Reading only `from` is what made
+ * those senders invisible to this CRM.
+ *
+ * @param array<string, mixed> $message
+ * @return array{wa_id: string, wa_user_id: string}
+ */
+function message_identity(array $message): array
+{
+    return [
+        'wa_id'      => normalizeWaId((string) ($message['from'] ?? '')),
+        'wa_user_id' => normalizeWaUserId(
+            (string) ($message['user_id'] ?? $message['from_user_id'] ?? '')
+        ),
+    ];
+}
+
+/**
  * Stores one inbound message.
  *
  * @param array<string, mixed> $message
- * @param array<string, string> $profileNames
+ * @param array<string, array{name: string, username: string}> $contacts
  * @return array{id: int, media_id: string}|null a row whose media still needs downloading
  */
-function handle_message(array $message, array $profileNames): ?array
+function handle_message(array $message, array $contacts): ?array
 {
-    $waId = normalizeWaId((string) ($message['from'] ?? ''));
-    if ($waId === '') {
+    $identity = message_identity($message);
+    if ($identity['wa_id'] === '' && $identity['wa_user_id'] === '') {
         error_log('[WhatsApp] inbound message with no sender, skipped: ' . json_encode($message));
         return null;
     }
 
     // A reaction annotates a message that already exists rather than
     // adding one, so it never reaches the insert below. Handled before
-    // getOrCreateCustomerByWaId() too: a 👍 on an old message should not
-    // be the thing that creates a customer record.
+    // getOrCreateCustomerByIdentity() too: a 👍 on an old message should
+    // not be the thing that creates a customer record.
     if (($message['type'] ?? '') === 'reaction') {
         handle_reaction($message);
         return null;
     }
 
-    $customer  = getOrCreateCustomerByWaId($waId, $profileNames[$waId] ?? '');
+    // Whichever identity the message carried is the one contacts[] is
+    // indexed under.
+    $contact = $contacts[$identity['wa_user_id']]
+            ?? $contacts[$identity['wa_id']]
+            ?? ['name' => '', 'username' => ''];
+    $identity['wa_username'] = $contact['username'];
+
+    $customer  = getOrCreateCustomerByIdentity($identity, $contact['name']);
     $sessionId = (string) $customer['session_id'];
 
     $fields = extract_message_fields($message);
@@ -268,17 +332,21 @@ function handle_echo(array $echo): ?array
 
     // `to` is the customer here: in an echo the business is the sender,
     // so reading `from` would file every one of these against our own
-    // number.
-    $waId = normalizeWaId((string) ($echo['to'] ?? ''));
-    if ($waId === '') {
+    // number. Same for the BSUID -- `to_user_id`, not `user_id`, which on
+    // an outbound echo is us.
+    $identity = [
+        'wa_id'      => normalizeWaId((string) ($echo['to'] ?? '')),
+        'wa_user_id' => normalizeWaUserId((string) ($echo['to_user_id'] ?? '')),
+    ];
+    if ($identity['wa_id'] === '' && $identity['wa_user_id'] === '') {
         error_log('[WhatsApp] echoed message with no recipient, skipped: ' . json_encode($echo));
         return null;
     }
 
     // An echo carries no contacts[], so there is no profile name to
-    // learn from it -- but the number may still be one we have never
+    // learn from it -- but the contact may still be one we have never
     // seen, if the first thing that ever happened was us messaging them.
-    $customer  = getOrCreateCustomerByWaId($waId);
+    $customer  = getOrCreateCustomerByIdentity($identity);
     $sessionId = (string) $customer['session_id'];
 
     $fields = extract_message_fields($echo, 'out');

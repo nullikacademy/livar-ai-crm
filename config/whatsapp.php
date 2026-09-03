@@ -82,7 +82,7 @@ final class WhatsApp
     public function sendText(string $to, string $body): array
     {
         return $this->send([
-            'to'   => self::normalizeTo($to),
+            'to'   => $to,
             'type' => 'text',
             'text' => ['body' => $body, 'preview_url' => true],
         ]);
@@ -112,7 +112,7 @@ final class WhatsApp
         }
 
         return $this->send([
-            'to'   => self::normalizeTo($to),
+            'to'   => $to,
             'type' => $type,
             $type  => $media,
         ]);
@@ -134,7 +134,7 @@ final class WhatsApp
         }
 
         return $this->send([
-            'to'       => self::normalizeTo($to),
+            'to'       => $to,
             'type'     => 'location',
             'location' => $location,
         ]);
@@ -156,7 +156,7 @@ final class WhatsApp
         }
 
         return $this->send([
-            'to'       => self::normalizeTo($to),
+            'to'       => $to,
             'type'     => 'reaction',
             'reaction' => [
                 'message_id' => $messageId,
@@ -204,7 +204,7 @@ final class WhatsApp
         }
 
         return $this->send([
-            'to'       => self::normalizeTo($to),
+            'to'       => $to,
             'type'     => 'template',
             'template' => $template,
         ]);
@@ -267,7 +267,7 @@ final class WhatsApp
         }
 
         return $this->send([
-            'to'          => self::normalizeTo($to),
+            'to'          => $to,
             'type'        => 'interactive',
             'interactive' => $interactive,
         ]);
@@ -563,6 +563,17 @@ final class WhatsApp
      */
     private function send(array $payload): array
     {
+        // Callers pass the customer's address as `to` without caring what
+        // kind it is. A phone number stays in `to`; a business-scoped user
+        // id -- the only address a WhatsApp username adopter has -- moves
+        // to `recipient`. Done here so all six send methods and anything
+        // added later get it for free.
+        if (isset($payload['to'])) {
+            $addressed = self::recipient((string) $payload['to']);
+            unset($payload['to']);
+            $payload = array_merge($addressed, $payload);
+        }
+
         $payload = array_merge(['messaging_product' => 'whatsapp', 'recipient_type' => 'individual'], $payload);
 
         $ch = curl_init($this->baseUrl . '/messages');
@@ -726,14 +737,43 @@ final class WhatsApp
     }
 
     /**
-     * WhatsApp wants the recipient as digits only, no leading '+'.
+     * Addresses a message to a phone number OR a business-scoped user id.
+     *
+     * A customer who reached us through a WhatsApp username never gave us
+     * a number, so there is nothing to put in `to`. Meta addresses them by
+     * their BSUID in `recipient` instead. The two are mutually exclusive
+     * in practice, and `to` wins when both are somehow set, so this
+     * returns exactly one of them.
+     *
+     * Telling them apart on shape rather than on a flag keeps every
+     * caller's signature unchanged: a phone number is digits once its
+     * punctuation is stripped, and a BSUID never is.
+     *
+     * @return array{to: string}|array{recipient: string}
      */
-    private static function normalizeTo(string $to): string
+    private static function recipient(string $to): array
     {
-        $digits = preg_replace('/\D+/', '', $to) ?? '';
-        if ($digits === '') {
-            throw new WhatsAppException('That customer has no usable WhatsApp number.', 422);
+        $to = trim($to);
+        if ($to === '') {
+            throw new WhatsAppException('That customer has no usable WhatsApp address.', 422);
         }
-        return $digits;
+
+        // Deliberately not normalizeWaId(): that strips letters, which
+        // would turn a BSUID into a run of digits and send the message to
+        // whatever phone number those digits happen to spell.
+        $alnum = preg_replace('/[^A-Za-z0-9]+/', '', $to) ?? '';
+        if ($alnum !== '' && ctype_digit($alnum)) {
+            return ['to' => $alnum];
+        }
+
+        // Same allowlist as normalizeWaUserId() in db_functions.php, kept
+        // here rather than shared so this client stays free of the data
+        // layer. Anything outside it cannot be a Meta identifier.
+        $userId = substr(preg_replace('/[^A-Za-z0-9._:=+\/~-]+/', '', $to) ?? '', 0, 128);
+        if ($userId === '') {
+            throw new WhatsAppException('That customer has no usable WhatsApp address.', 422);
+        }
+
+        return ['recipient' => $userId];
     }
 }

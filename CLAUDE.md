@@ -64,6 +64,20 @@ README** — the template stays placeholders-only.
   either: the 24-hour window is opened by the customer speaking, and us
   replying from a phone is not that. `wa_source` records which side wrote
   a message — `'crm'` from here, `'app'` from a phone.
+- **A sender is not always a phone number.** WhatsApp usernames mean Meta
+  can omit `from` entirely and identify someone by a business-scoped user
+  id (`user_id`, older payloads `from_user_id`) — which it now sends on
+  every inbound message regardless. `normalizeWaId()` would shred that
+  into a meaningless run of digits, so it has its own normaliser
+  (`normalizeWaUserId()`), its own column (`wa_user_id`) and its own
+  plain-unique index. `getOrCreateCustomerByIdentity()` is the only
+  get-or-create: it looks under BOTH identities before inserting, because
+  checking just the one it would key on forks a second row for someone
+  already in the database the moment Meta sends the other half. A BSUID
+  carries dots, which PostgREST reads as filter syntax — hence
+  `eqFilter()`, and hence `waUserSessionId()` hashing rather than
+  embedding it. `session_id` is assigned once: a number appearing later
+  fills in blanks via `linkCustomerIdentity()` and never moves the thread.
 - **A reaction annotates a row; it is never a row.** WhatsApp sends a
   `reaction` naming the message it belongs to, so `handle_reaction()`
   writes it onto that row's `wa_reaction` and returns — before

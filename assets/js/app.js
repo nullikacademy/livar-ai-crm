@@ -136,6 +136,15 @@
         };
     }
 
+    // The customer's WhatsApp @handle, when they have one and we know it.
+    // Only username adopters do, and they are exactly the customers with
+    // no phone number to show instead.
+    function waHandle(customer) {
+        const handle = (customer.wa_username || '').trim();
+        if (!handle) return '';
+        return handle.startsWith('@') ? handle : '@' + handle;
+    }
+
     function fullName(customer) {
         const name = [customer.first_name, customer.last_name].filter(Boolean).join(' ').trim();
         // Four names, most deliberate first:
@@ -146,12 +155,15 @@
         //   - username, which is the company field;
         //   - wa_profile_name, what the CUSTOMER calls themselves, which
         //     is the only one of the four nobody here chose.
-        // The bare number is the last resort a first contact would show.
+        // The bare number is the last resort a first contact would show --
+        // and a customer who reached us through a WhatsApp username has no
+        // number at all, so their @handle stands in for it.
         return name
             || customer.wa_contact_name
             || customer.username
             || customer.wa_profile_name
             || customer.phone
+            || waHandle(customer)
             || 'Unnamed customer';
     }
 
@@ -659,7 +671,13 @@
         const chip = buildLabelChip(customer);
         if (chip) el.chatCustomerName.appendChild(chip);
 
-        el.chatCustomerPhone.textContent = customer.phone || customer.email || 'No phone on file';
+        // A username adopter has no number by choice, so "No phone on file"
+        // would read as missing data an agent ought to go and find. Their
+        // handle is the identity WhatsApp itself shows.
+        el.chatCustomerPhone.textContent = customer.phone
+            || waHandle(customer)
+            || customer.email
+            || 'No phone on file';
         refreshWindowNotice();
     }
 
@@ -2681,6 +2699,12 @@
         const contactName = state.selectedCustomer.wa_contact_name || '';
         document.getElementById('waContactField').hidden = contactName === '';
         document.getElementById('field_wa_contact_name').textContent = contactName || '—';
+
+        // Their @handle, which only exists when they have chosen not to
+        // share a number.
+        const handle = waHandle(state.selectedCustomer);
+        document.getElementById('waHandleField').hidden = handle === '';
+        document.getElementById('field_wa_username').textContent = handle || '—';
 
         el.panelOverlay.hidden = false;
         requestAnimationFrame(() => {

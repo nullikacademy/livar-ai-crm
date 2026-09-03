@@ -68,6 +68,39 @@ function normalizeWaId(string $waId): string
 }
 
 /**
+ * Reduces a business-scoped user id (BSUID) to a storable, filterable id.
+ *
+ * A BSUID is how WhatsApp names a sender who has not given us their phone
+ * number -- an opaque per-business string such as 'BR.1A2B3C4D...'. It is
+ * NOT a number, so normalizeWaId() would shred it into a meaningless run
+ * of digits that could even collide with a real number. Hence its own
+ * normaliser, and its own column.
+ *
+ * The charset is an allowlist rather than an escape: `.` `:` `+` are all
+ * PostgREST filter syntax, and anything outside what Meta actually uses
+ * is far more likely to be an injection attempt than a real id.
+ */
+function normalizeWaUserId(string $userId): string
+{
+    $clean = preg_replace('/[^A-Za-z0-9._:=+\/~-]+/', '', $userId) ?? '';
+    return substr($clean, 0, 128);
+}
+
+/**
+ * Wraps a filter value in double quotes for PostgREST.
+ *
+ * normalizeWaId() sidesteps this by reducing to digits, but a BSUID keeps
+ * its dots, and an unquoted `eq.BR.1A2B` is read as filter syntax. The
+ * allowlist above already excludes `"` and `\`, so there is nothing left
+ * inside the quotes that needs escaping -- but escape anyway rather than
+ * rely on a caller having normalised first.
+ */
+function eqFilter(string $value): string
+{
+    return 'eq."' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
+}
+
+/**
  * The deterministic session_id for a WhatsApp conversation.
  *
  * Deriving it from the number rather than generating a random one is what
@@ -77,6 +110,24 @@ function normalizeWaId(string $waId): string
 function waSessionId(string $waId): string
 {
     return 'wa_' . normalizeWaId($waId);
+}
+
+/**
+ * The deterministic session_id for a customer known only by a BSUID.
+ *
+ * Hashed rather than embedded because session_id travels in PostgREST
+ * filters and in api/avatar.php's query string, and a raw BSUID carries
+ * the dots that made eqFilter() necessary. Deterministic for the same
+ * reason waSessionId() is: two concurrent first deliveries have to land
+ * on one row, not two.
+ *
+ * A customer's session_id is assigned once and never recomputed, so a
+ * number appearing later (see linkCustomerIdentity()) does not move an
+ * existing thread to a wa_ id -- that would strand its whole history.
+ */
+function waUserSessionId(string $userId): string
+{
+    return 'wau_' . substr(sha1(normalizeWaUserId($userId)), 0, 24);
 }
 
 /**
@@ -443,37 +494,172 @@ function getCustomerByWaId(string $waId): ?array
 }
 
 /**
- * Returns the customer for a WhatsApp number, creating one on first
- * contact with whatever profile name WhatsApp reported.
+ * The address to send this customer a WhatsApp message at.
  *
- * The read comes first so a number an agent already linked to a
- * hand-created customer keeps that customer (and its own session_id)
- * untouched. Only a genuinely unknown number reaches the upsert, which
- * resolves on the unique wa_id index -- so two webhook deliveries racing
- * on a first message converge on one row instead of one of them failing
- * with a 409.
+ * Their number when we have one, and their business-scoped user id when
+ * we do not -- which is the case for anyone who reached us through a
+ * WhatsApp username. Returns '' when the customer is not reachable on
+ * WhatsApp at all (a row an agent created by hand, say).
+ *
+ * The number is preferred because Meta prefers it: `to` wins over
+ * `recipient` when a payload somehow carries both.
+ *
+ * @param array<string, mixed> $customer
  */
-function getOrCreateCustomerByWaId(string $waId, string $profileName = ''): array
+function customerAddress(array $customer): string
 {
-    $waId = normalizeWaId($waId);
-    if ($waId === '') {
+    $waId = normalizeWaId((string) ($customer['wa_id'] ?? ''));
+    if ($waId !== '') {
+        return $waId;
+    }
+
+    return normalizeWaUserId((string) ($customer['wa_user_id'] ?? ''));
+}
+
+/**
+ * Looks a customer up by their business-scoped user id.
+ */
+function getCustomerByWaUserId(string $userId): ?array
+{
+    $userId = normalizeWaUserId($userId);
+    if ($userId === '') {
+        return null;
+    }
+
+    $sb     = Supabase::client();
+    $result = $sb->get('livar_customer', [
+        'wa_user_id' => eqFilter($userId),
+        'select'     => '*',
+        'limit'      => '1',
+    ]);
+
+    return $result['rows'][0] ?? null;
+}
+
+/**
+ * Fills in an identity a customer row is missing, and nothing else.
+ *
+ * The two identities appear at different times. A username adopter is
+ * BSUID-only until they message us from a number we can see, or the
+ * business saves them; someone we have known by number for months starts
+ * carrying a BSUID the moment Meta enables it. Either way one row already
+ * exists and simply lacks the other half.
+ *
+ * Only ever writes a column that is currently empty. A number or a name
+ * already on the row was either learned earlier or typed by an agent, and
+ * a webhook is not the authority on it.
+ *
+ * @param array<string, mixed>  $customer
+ * @param array<string, string> $identity
+ * @return array<string, mixed> the customer, updated if anything changed
+ */
+function linkCustomerIdentity(array $customer, array $identity): array
+{
+    $patch = [];
+    foreach (['wa_id', 'wa_user_id', 'wa_username'] as $field) {
+        $value = $identity[$field] ?? '';
+        if ($value !== '' && ($customer[$field] ?? null) === null) {
+            $patch[$field] = $value;
+        }
+    }
+
+    // A number arriving for the first time also settles the country and
+    // the dialable phone, both of which were unknowable until now.
+    if (isset($patch['wa_id'])) {
+        if (($customer['phone'] ?? null) === null) {
+            $patch['phone'] = '+' . $patch['wa_id'];
+        }
+        if (($customer['country'] ?? null) === null) {
+            $country = country_name_for_phone($patch['wa_id']);
+            if ($country !== null) {
+                $patch['country'] = $country;
+            }
+        }
+    }
+
+    if ($patch === []) {
+        return $customer;
+    }
+
+    try {
+        $rows = Supabase::client()->patch(
+            'livar_customer',
+            ['session_id' => 'eq.' . (string) ($customer['session_id'] ?? '')],
+            $patch
+        );
+    } catch (SupabaseException $e) {
+        // A unique-index clash means the other identity is already on a
+        // DIFFERENT row -- the same person reached us twice before Meta
+        // sent both halves together. Merging two histories is not
+        // something a webhook should decide, so leave both rows alone and
+        // say so; the message itself still files against the row we have.
+        error_log('[WhatsApp] could not link identity for ' . ($customer['session_id'] ?? '?')
+                  . ': ' . $e->getMessage());
+        return $customer;
+    }
+
+    return $rows[0] ?? array_merge($customer, $patch);
+}
+
+/**
+ * Returns the customer for whatever identity a webhook gave us, creating
+ * one on first contact.
+ *
+ * WhatsApp names an inbound sender one of two ways, and increasingly both:
+ * a phone number, and/or a business-scoped user id. A person who uses a
+ * WhatsApp username has no number in the payload at all, so a phone-only
+ * lookup would drop their messages on the floor -- which is exactly what
+ * this app used to do.
+ *
+ * The BSUID is preferred as the key when present: it is stable for this
+ * business, and it is the only identity a username adopter has. The phone
+ * number remains the key for everyone already in the database, so no
+ * existing conversation moves.
+ *
+ * @param array<string, string> $identity wa_id / wa_user_id / wa_username
+ * @return array<string, mixed>
+ */
+function getOrCreateCustomerByIdentity(array $identity, string $profileName = ''): array
+{
+    $waId     = normalizeWaId($identity['wa_id'] ?? '');
+    $userId   = normalizeWaUserId($identity['wa_user_id'] ?? '');
+    $username = trim($identity['wa_username'] ?? '');
+    $identity = ['wa_id' => $waId, 'wa_user_id' => $userId, 'wa_username' => $username];
+
+    if ($waId === '' && $userId === '') {
         throw new SupabaseException('A WhatsApp message arrived without a usable sender id.', 422);
     }
 
-    $existing = getCustomerByWaId($waId);
+    // Look under both identities before creating anything. Checking only
+    // the one we would key on would create a second row for a person the
+    // CRM already knows the moment Meta starts sending the other half.
+    $existing = $userId !== '' ? getCustomerByWaUserId($userId) : null;
+    if ($existing === null && $waId !== '') {
+        $existing = getCustomerByWaId($waId);
+    }
     if ($existing !== null) {
-        return $existing;
+        return linkCustomerIdentity($existing, $identity);
     }
 
+    $keyedOnUserId = $userId !== '';
+
     $payload = [
-        'session_id' => waSessionId($waId),
-        'wa_id'      => $waId,
-        'phone'      => '+' . $waId,
-        // Nobody has spoken to this number before, which is the one
+        'session_id' => $keyedOnUserId ? waUserSessionId($userId) : waSessionId($waId),
+        // Nobody has spoken to this contact before, which is the one
         // moment the CRM can say that for certain. An agent can move
         // them to 'old' later; guessing it back afterwards is impossible.
         'label'      => 'new',
     ];
+    if ($waId !== '') {
+        $payload['wa_id'] = $waId;
+        $payload['phone'] = '+' . $waId;
+    }
+    if ($userId !== '') {
+        $payload['wa_user_id'] = $userId;
+    }
+    if ($username !== '') {
+        $payload['wa_username'] = $username;
+    }
     // Only send a name we actually have -- merge-duplicates would
     // otherwise blank out a name the racing insert just stored.
     if ($profileName !== '') {
@@ -484,24 +670,30 @@ function getOrCreateCustomerByWaId(string $waId, string $profileName = ''): arra
     // the one the customer picked for themselves, so it is collected at
     // the moment the conversation starts -- which is the first point the
     // contact stops being an address-book entry and becomes a customer.
-    $contactName = getWaContactName($waId);
-    if ($contactName !== null) {
-        $payload['wa_contact_name'] = $contactName;
-    }
-    // The country is in the number, so there is no reason to make an
-    // agent type it. Only ever written here, on the insert: a later
-    // correction by hand must not be overwritten by the prefix table.
-    $country = country_name_for_phone($waId);
-    if ($country !== null) {
-        $payload['country'] = $country;
+    // A BSUID-only sender is not in the address book by definition.
+    if ($waId !== '') {
+        $contactName = getWaContactName($waId);
+        if ($contactName !== null) {
+            $payload['wa_contact_name'] = $contactName;
+        }
+        // The country is in the number, so there is no reason to make an
+        // agent type it. Only ever written here, on the insert: a later
+        // correction by hand must not be overwritten by the prefix table.
+        $country = country_name_for_phone($waId);
+        if ($country !== null) {
+            $payload['country'] = $country;
+        }
     }
 
     $sb   = Supabase::client();
-    $rows = $sb->upsert('livar_customer', $payload, 'wa_id');
+    $rows = $sb->upsert('livar_customer', $payload, $keyedOnUserId ? 'wa_user_id' : 'wa_id');
 
     // A merge upsert always returns the row, but re-read defensively
     // rather than hand a half-built payload to the rest of the webhook.
-    return $rows[0] ?? getCustomerByWaId($waId) ?? $payload;
+    if (isset($rows[0])) {
+        return $rows[0];
+    }
+    return ($keyedOnUserId ? getCustomerByWaUserId($userId) : getCustomerByWaId($waId)) ?? $payload;
 }
 
 /**
@@ -515,7 +707,7 @@ function getOrCreateCustomerByWaId(string $waId, string $profileName = ''): arra
  * Contacts land in their own table, not in livar_customer. Most numbers
  * in a phone have never messaged the business, and turning each into a
  * customer would bury the real conversations. The name is collected when
- * that number first writes in -- see getOrCreateCustomerByWaId().
+ * that number first writes in -- see getOrCreateCustomerByIdentity().
  *
  * Any customer that already exists is updated immediately, though, which
  * is what makes the sync visible on a directory that is already full.

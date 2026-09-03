@@ -56,6 +56,19 @@
             </div>
         </div>
 
+        <!--
+            The customer's WhatsApp @handle. Only username adopters have
+            one, and they are precisely the customers whose phone field is
+            empty -- so this is the answer to "why is there no number?",
+            shown where an agent goes looking for the number.
+        -->
+        <div class="field" id="waHandleField" hidden>
+            <label>WhatsApp username</label>
+            <div class="details-form__readonly">
+                <span id="field_wa_username">—</span>
+            </div>
+        </div>
+
         <div class="details-form__row details-form__row--2">
             <div class="field">
                 <label for="field_first_name">First name</label>

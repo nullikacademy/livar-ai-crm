@@ -456,6 +456,32 @@ a customer a picture; without one, the avatar is their initials.
   WhatsApp when Send is pressed. The file's mime is re-read from its own
   bytes with `finfo_file()`, never taken from the browser.
 
+### Customers who never gave you their number
+
+WhatsApp usernames let someone message a business without revealing their
+phone number. Meta then leaves the phone-based `from` out of the webhook
+entirely and identifies the sender by a **business-scoped user ID**
+(BSUID) instead — an opaque string like `BR.1A2B3C…`, unique to your
+business, that arrives on every inbound message whether or not the sender
+uses a username.
+
+The CRM stores it in `wa_user_id` and, when Meta sends it, the `@handle`
+in `wa_username`. For those customers:
+
+- the sidebar and the chat header show the handle where the number would
+  be, rather than an empty space or "No phone on file" — they have no
+  number by choice, not by omission;
+- there is no flag, because a country can only be derived from a dialling
+  prefix and there is no prefix to read;
+- replies are addressed to the BSUID (`recipient`) instead of the number
+  (`to`); everything else about sending is unchanged.
+
+If their number does show up later — Meta releases it once you have
+exchanged messages, or once you save them as a contact — it is written
+onto the **same** customer, along with the country and the dialable
+phone. The conversation keeps its history; nothing forks into a second
+thread, and their `session_id` never changes.
+
 ### Reactions
 
 The 👍 a customer long-presses onto a message is not a message. WhatsApp

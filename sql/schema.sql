@@ -92,6 +92,29 @@ drop index if exists public.idx_livar_customer_wa_id;
 create unique index if not exists idx_livar_customer_wa_id
     on public.livar_customer (wa_id);
 
+-- A customer who has no phone number ------------------------------------
+--
+-- WhatsApp usernames let a person message a business without revealing
+-- their number. Meta then omits the phone-based `from` / `wa_id` from the
+-- webhook and identifies the sender by a BUSINESS-SCOPED USER ID instead
+-- -- an opaque string like 'BR.1A2B3C...', unique to this business, that
+-- arrives on every inbound message whether or not the sender uses a
+-- username.
+--
+-- So wa_id can legitimately be null now, and this is the identity that
+-- replaces it. Same reasoning as the wa_id index above: plain unique, not
+-- partial, because `on conflict (wa_user_id)` has to be able to infer it,
+-- and NULLs are already distinct.
+alter table public.livar_customer
+    add column if not exists wa_user_id text,
+    -- The @handle, when Meta sends one. Display only -- it is the user's
+    -- to change, so it is never the key. Distinct from `username`, which
+    -- is a CRM profile field an agent types.
+    add column if not exists wa_username text;
+
+create unique index if not exists idx_livar_customer_wa_user_id
+    on public.livar_customer (wa_user_id);
+
 -- Chat history -----------------------------------------------------------
 -- Originally written only by n8n's LangChain memory node; the CRM is now
 -- the single writer (see CLAUDE.md). The WhatsApp columns are added to
@@ -270,6 +293,10 @@ returns table (
     avatar_path        text,
     label              text,
     wa_contact_name    text,
+    -- The @handle of a customer who reached us through a WhatsApp
+    -- username. They have no phone number, so without this the sidebar
+    -- has nothing at all to call them by.
+    wa_username        text,
     -- Inbound messages the agent has not seen. Counted here rather than
     -- fetched per row afterwards, for the same reason the preview is.
     unread_count       bigint,
@@ -291,7 +318,10 @@ as $$
             c.username   ilike '%' || p_search || '%' or
             c.phone      ilike '%' || p_search || '%' or
             c.email      ilike '%' || p_search || '%' or
-            c.wa_id      ilike '%' || p_search || '%'
+            c.wa_id      ilike '%' || p_search || '%' or
+            -- Searching for a number-less customer means typing their
+            -- handle; there is nothing else to type.
+            c.wa_username ilike '%' || p_search || '%'
         )
     ),
     counted as (
@@ -301,6 +331,7 @@ as $$
         f.id, f.created_at, f.session_id, f.first_name, f.last_name, f.username,
         f.phone, f.country, f.email, f.city, f.address, f.tax_id, f.details,
         f.wa_id, f.wa_profile_name, f.last_inbound_at, f.avatar_path, f.label, f.wa_contact_name,
+        f.wa_username,
         -- Only INBOUND rows count: a reply we sent is not something to
         -- catch up on. A conversation never opened has last_read_at null,
         -- which the schema backfills on install so only genuinely new
