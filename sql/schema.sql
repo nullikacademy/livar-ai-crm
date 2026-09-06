@@ -179,6 +179,21 @@ alter table public.n8n_chat_history
     -- Clearing a reaction sets the column back to null.
     add column if not exists wa_reaction     text,
     add column if not exists wa_reaction_out text,
+    -- The Meta ad this conversation started from. Meta attaches a
+    -- `referral` object to the FIRST message after someone taps a
+    -- Click-to-WhatsApp ad, carrying the ad's headline, body, source URL
+    -- and creative -- which is the context for "can I get more info about
+    -- this?", a question that is otherwise unanswerable.
+    --
+    -- Stored whole as jsonb rather than shredded into columns: it is a
+    -- record of what Meta sent, the field names are still moving (headline
+    -- vs ad_title), and nothing here is ever filtered on.
+    add column if not exists wa_referral   jsonb,
+    -- The ad's picture, pulled onto our own disk. Meta serves it from a
+    -- CDN URL that expires, so rendering the card from that URL would
+    -- give a thread that quietly loses its images over time.
+    add column if not exists referral_media_path text,
+    add column if not exists referral_media_mime text,
     add column if not exists media_path    text,
     add column if not exists media_mime    text,
     add column if not exists media_size    bigint,

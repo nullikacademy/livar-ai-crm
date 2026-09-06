@@ -229,7 +229,8 @@ function checkSchema(): array
         'n8n_chat_history' => 'id,created_at,direction,wa_message_id,wa_status,msg_type,wa_media_id,'
                             . 'media_path,media_mime,media_size,media_name,latitude,longitude,place_name,place_address,'
                             . 'ai_caption,ai_transcript,wa_buttons,wa_template,wa_source,'
-                            . 'wa_reaction,wa_reaction_out',
+                            . 'wa_reaction,wa_reaction_out,'
+                            . 'wa_referral,referral_media_path,referral_media_mime',
         'livar_customer'   => 'id,wa_id,wa_profile_name,last_inbound_at,avatar_path,label,wa_contact_name,'
                             . 'wa_user_id,wa_username',
         // Its own table, so a missing one is a missing probe rather than

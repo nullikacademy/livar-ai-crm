@@ -321,6 +321,15 @@ function handle_message(array $message, array $contacts): ?array
     $fields = extract_message_fields($message);
     $fields['wa_message_id'] = (string) ($message['id'] ?? '');
 
+    // The ad this conversation came from, when it came from one. Stored
+    // on the message rather than the customer: someone can arrive from
+    // two different ads weeks apart, and which ad prompted WHICH question
+    // is the whole value of it.
+    $referral = extract_referral($message);
+    if ($referral !== null) {
+        $fields['wa_referral'] = $referral;
+    }
+
     // WhatsApp sends a unix timestamp; without it every row in a
     // redelivered batch would look like it arrived just now.
     if (isset($message['timestamp']) && ctype_digit((string) $message['timestamp'])) {
@@ -340,9 +349,16 @@ function handle_message(array $message, array $contacts): ?array
     // not download.
     touchLastInbound($sessionId, $fields['created_at'] ?? null);
 
-    $mediaId = (string) ($fields['wa_media_id'] ?? '');
-    if ($mediaId !== '' && isset($row['id'])) {
-        return ['id' => (int) $row['id'], 'media_id' => $mediaId];
+    $mediaId  = (string) ($fields['wa_media_id'] ?? '');
+    $adImage  = (string) ($referral['image_url'] ?? '');
+    if (($mediaId !== '' || $adImage !== '') && isset($row['id'])) {
+        // Both downloads happen after the ack, for the same reason: the
+        // webhook has to answer before 360dialog gives up on it.
+        return [
+            'id'         => (int) $row['id'],
+            'media_id'   => $mediaId,
+            'ad_image'   => $adImage,
+        ];
     }
 
     return null;
@@ -591,6 +607,154 @@ function extract_message_fields(array $message, string $direction = 'in'): array
 }
 
 /**
+ * Pulls the Click-to-WhatsApp ad details off an inbound message.
+ *
+ * Meta attaches a `referral` object to the FIRST message someone sends
+ * after tapping an ad, and only that one. It is what turns "can I get
+ * more information about this?" from an unanswerable question into a
+ * question about a specific product.
+ *
+ * Two spellings of the same fields are in circulation -- `headline`/
+ * `body` in Meta's own documentation, `ad_title`/`ad_body` in payloads
+ * seen through some providers -- so both are read. Guessing one name and
+ * being wrong is silent: the card just never appears.
+ *
+ * @param array<string, mixed> $message
+ * @return array<string, mixed>|null
+ */
+function extract_referral(array $message): ?array
+{
+    $ref = is_array($message['referral'] ?? null) ? $message['referral'] : [];
+    if ($ref === []) {
+        return null;
+    }
+
+    $pick = static function (array $src, string ...$keys): string {
+        foreach ($keys as $key) {
+            $value = trim((string) ($src[$key] ?? ''));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+        return '';
+    };
+
+    $referral = [
+        'headline'    => $pick($ref, 'headline', 'ad_title', 'title'),
+        'body'        => $pick($ref, 'body', 'ad_body', 'description'),
+        'source_url'  => $pick($ref, 'source_url'),
+        'source_id'   => $pick($ref, 'source_id'),
+        'source_type' => strtolower($pick($ref, 'source_type')),
+        'media_type'  => strtolower($pick($ref, 'media_type')),
+        'ctwa_clid'   => $pick($ref, 'ctwa_clid'),
+        // Kept apart from the rest: this is the only field that is a URL
+        // we go and fetch, and it is dead within days.
+        'image_url'   => $pick($ref, 'image_url', 'original_image_url', 'thumbnail_url'),
+        'video_url'   => $pick($ref, 'video_url'),
+    ];
+
+    // Something arrived under `referral` but none of the fields we know.
+    // Worth seeing rather than discarding -- the names have moved once.
+    if (implode('', $referral) === '') {
+        error_log('[WhatsApp] referral with no recognised fields: ' . json_encode($ref));
+        return null;
+    }
+
+    return array_filter($referral, static fn(string $v): bool => $v !== '');
+}
+
+/**
+ * Downloads an ad creative and files it against the message.
+ *
+ * The URL is Meta's, arriving on a webhook only 360dialog can reach, but
+ * it is still an arbitrary URL this server is about to request -- so it
+ * must be https, must not resolve to a private address, and is capped at
+ * the same size as any other media. Failure is never fatal: the ad card
+ * still renders with its headline and body, just without the picture.
+ */
+function download_referral_media(int $rowId, string $url): void
+{
+    if (!referral_url_is_safe($url)) {
+        error_log('[WhatsApp] refused to fetch an ad creative from: ' . $url);
+        return;
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        // A redirect could land somewhere the check above rejected, so
+        // there is no version of following one that stays safe.
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_MAXFILESIZE    => WhatsApp::maxMediaBytes(),
+    ]);
+
+    $bytes  = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error  = curl_error($ch);
+    curl_close($ch);
+
+    if (!is_string($bytes) || $bytes === '' || $status >= 400) {
+        error_log("[WhatsApp] ad creative download failed ({$status}) {$error}");
+        return;
+    }
+    if (strlen($bytes) > WhatsApp::maxMediaBytes()) {
+        error_log('[WhatsApp] ad creative is larger than the media limit, skipped');
+        return;
+    }
+
+    // The mime comes from the bytes, never from the response header --
+    // same rule as api/upload.php.
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime  = (string) $finfo->buffer($bytes);
+    if (!str_starts_with($mime, 'image/')) {
+        error_log('[WhatsApp] ad creative is not an image (' . $mime . '), skipped');
+        return;
+    }
+
+    try {
+        $saved = media_store($bytes, $mime);
+        setMessageReferralMedia($rowId, $saved['path'], $saved['mime']);
+    } catch (Throwable $e) {
+        error_log('[WhatsApp] could not store an ad creative: ' . $e->getMessage());
+    }
+}
+
+/**
+ * https, a real hostname, and not a private address.
+ *
+ * Blocks the SSRF shape: a payload naming 127.0.0.1 or 169.254.169.254
+ * to make this server fetch something only it can reach.
+ */
+function referral_url_is_safe(string $url): bool
+{
+    $parts = parse_url($url);
+    if (($parts['scheme'] ?? '') !== 'https' || ($parts['host'] ?? '') === '') {
+        return false;
+    }
+
+    $host = $parts['host'];
+    $ips  = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : (gethostbynamel($host) ?: []);
+    if ($ips === []) {
+        return false;
+    }
+
+    foreach ($ips as $ip) {
+        if (!filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        )) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
  * Puts a reaction onto the message it was left on.
  *
  * `reaction.message_id` is the message being reacted to, not the
@@ -739,25 +903,36 @@ function handle_status(array $status): void
  * while the file still exists upstream, which makes lazy fetching a
  * fallback rather than the plan.
  *
- * @param array<int, array{id: int, media_id: string}> $pending
+ * @param array<int, array{id: int, media_id: string, ad_image?: string}> $pending
  */
 function download_pending_media(array $pending): void
 {
     foreach ($pending as $item) {
-        try {
-            $file = WhatsApp::client()->fetchMedia($item['media_id']);
-            $saved = media_store($file['bytes'], $file['mime']);
-            setMessageMedia($item['id'], $saved['path'], $saved['mime'], $saved['size']);
+        $mediaId = (string) ($item['media_id'] ?? '');
+        if ($mediaId !== '') {
+            try {
+                $file = WhatsApp::client()->fetchMedia($mediaId);
+                $saved = media_store($file['bytes'], $file['mime']);
+                setMessageMedia($item['id'], $saved['path'], $saved['mime'], $saved['size']);
 
-            if (str_starts_with($saved['mime'], 'image/')) {
-                caption_photo($item['id'], $saved['abs'], $saved['mime']);
-            } elseif (str_starts_with($saved['mime'], 'audio/')) {
-                transcribe_voice($item['id'], $saved['abs'], $saved['mime']);
+                if (str_starts_with($saved['mime'], 'image/')) {
+                    caption_photo($item['id'], $saved['abs'], $saved['mime']);
+                } elseif (str_starts_with($saved['mime'], 'audio/')) {
+                    transcribe_voice($item['id'], $saved['abs'], $saved['mime']);
+                }
+            } catch (Throwable $e) {
+                // The row is already in the thread; api/media.php will try
+                // again the first time somebody opens it.
+                error_log("[WhatsApp] media download failed for row {$item['id']}: " . $e->getMessage());
             }
-        } catch (Throwable $e) {
-            // The row is already in the thread; api/media.php will try
-            // again the first time somebody opens it.
-            error_log("[WhatsApp] media download failed for row {$item['id']}: " . $e->getMessage());
+        }
+
+        // The ad creative, which has no second chance: unlike WhatsApp
+        // media there is no id to re-fetch it by later, only a CDN URL
+        // that stops working.
+        $adImage = (string) ($item['ad_image'] ?? '');
+        if ($adImage !== '') {
+            download_referral_media($item['id'], $adImage);
         }
     }
 

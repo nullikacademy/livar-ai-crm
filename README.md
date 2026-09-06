@@ -456,6 +456,34 @@ a customer a picture; without one, the avatar is their initials.
   WhatsApp when Send is pressed. The file's mime is re-read from its own
   bytes with `finfo_file()`, never taken from the browser.
 
+### Conversations that start from a Meta ad
+
+When someone taps a Click-to-WhatsApp ad, Meta attaches a **referral** to
+the first message they send: the ad's headline, its body text, a link to
+the ad, and the creative. That is the context for "can I get more
+information about this?" — a question that is otherwise unanswerable,
+because "this" is never in the message.
+
+The CRM shows the same card WhatsApp shows on the phone, above the
+message that arrived with it, and **the AI drafts from it**: the ad's
+picture is attached to the draft request as a real image, with the
+headline and body as text, so the reply is about the product the customer
+was actually looking at. It stays attached for the rest of the
+conversation, so a later "how much is it?" is still answerable.
+
+The creative is downloaded onto your own disk on arrival. Meta serves it
+from a CDN link that stops working within days, so a thread rendered
+straight from that URL would quietly lose its ad images over time. Only
+the most recent ad's picture is sent to the model — a customer who has
+come back through three different ads does not need all three re-sent on
+every draft.
+
+**This needs one setting on Meta's side.** Ad attribution must be enabled
+for the WhatsApp Business account, otherwise Meta sends no referral at
+all and there is nothing for the CRM to show. The referral only ever
+arrives on the *first* message after the tap; the follow-ups are ordinary
+messages.
+
 ### Customers who never gave you their number
 
 WhatsApp usernames let someone message a business without revealing their

@@ -118,12 +118,38 @@ function buildTurns(array $messages): array
         }
     }
 
+    // The most recent ad creative, and only that one. A customer who has
+    // come back through three different ads does not need all three
+    // pictures re-sent on every draft; the one they arrived from last is
+    // the one their current question is about.
+    $adImageId = 0;
+    foreach (array_reverse($messages) as $msg) {
+        if (!empty($msg['referral']) && !empty($msg['_referral_path'])) {
+            $adImageId = (int) $msg['id'];
+            break;
+        }
+    }
+
     $turns = [];
 
     foreach ($messages as $msg) {
         $role    = (($msg['direction'] ?? null) === 'out' || $msg['type'] === 'ai') ? 'assistant' : 'user';
         $content = trim((string) $msg['content']);
         $type    = (string) ($msg['msg_type'] ?? 'text');
+
+        // The ad goes in as its own turn, just before the message that
+        // arrived with it. Separate rather than merged so the message
+        // keeps its normal handling -- a voice note that came from an ad
+        // is still a voice note -- and because "here is the ad, and here
+        // is what they then asked" is the order the model needs it in.
+        // Without this, "can I get more information about this?" has no
+        // referent at all and the draft has to guess what "this" is.
+        if (!empty($msg['referral'])) {
+            $adTurn = referralTurn($msg, $role, (int) $msg['id'] === $adImageId);
+            if ($adTurn !== null) {
+                $turns[] = $adTurn;
+            }
+        }
 
         if ($type === 'image') {
             $turn = imageTurn($msg, $role, $content, isset($attachIds[(int) $msg['id']]));
@@ -243,6 +269,54 @@ function imageTurn(array $msg, string $role, string $caption, bool $attach): ?ar
 
     $described = $stored !== '' ? '[photo: ' . $stored . ']' : '[sent a photo]';
     $text      = $caption !== '' ? $described . ' ' . $caption : $described;
+
+    return ['role' => $role, 'content' => $text];
+}
+
+/**
+ * The Meta ad a message arrived from, as a turn the model can read.
+ *
+ * The creative travels as a real image when we have it on disk, because
+ * the ad IS the product the customer is asking about and a headline
+ * rarely describes the picture. The headline and body come along either
+ * way, so an ad whose image we could not download still gives the draft
+ * something concrete to answer from.
+ *
+ * @param array<string, mixed> $msg
+ * @return array<string, mixed>|null
+ */
+function referralTurn(array $msg, string $role, bool $attach): ?array
+{
+    $ref = is_array($msg['referral'] ?? null) ? $msg['referral'] : [];
+    if ($ref === []) {
+        return null;
+    }
+
+    $source = ($ref['source_type'] ?? '') === 'post' ? 'post' : 'ad';
+    $facts  = array_filter([
+        $ref['headline'] ?? '',
+        $ref['body'] ?? '',
+    ], static fn(string $v): bool => trim($v) !== '');
+
+    $text = '[Arrived from your Meta ' . $source . ']';
+    if ($facts) {
+        $text .= ' ' . implode(' — ', $facts);
+    }
+
+    if ($attach && !empty($msg['_referral_path'])) {
+        $abs  = media_abs_path((string) $msg['_referral_path']);
+        $part = $abs !== null
+            ? AI::imagePart($abs, (string) ($msg['referral_media_mime'] ?? 'image/jpeg'))
+            : null;
+
+        if ($part !== null) {
+            return [
+                'role'    => $role,
+                'content' => [['type' => 'text', 'text' => $text], $part],
+            ];
+        }
+        // Creative gone from disk; the headline and body still stand.
+    }
 
     return ['role' => $role, 'content' => $text];
 }

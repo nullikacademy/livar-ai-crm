@@ -805,6 +805,54 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     line-height: 1.35;
 }
 
+/* The Meta ad a conversation started from, drawn above the message that
+   arrived with it -- the same order the customer's own phone shows. */
+.ad-card {
+    margin: -3px -5px 7px;
+    border-radius: var(--r-md, 10px);
+    overflow: hidden;
+    background: var(--surface-2, rgba(0, 0, 0, 0.04));
+    border: 1px solid var(--line);
+}
+.bubble--ours .ad-card {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.24);
+}
+.ad-card__image {
+    display: block;
+    width: 100%;
+    max-height: 190px;
+    object-fit: cover;
+}
+.ad-card__text { padding: 7px 10px 9px; }
+.ad-card__tag {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 2px;
+}
+.bubble--ours .ad-card__tag { color: rgba(255, 255, 255, 0.75); }
+.ad-card__headline { font-weight: 600; font-size: 13.5px; line-height: 1.35; }
+.ad-card__body {
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: var(--ink-2);
+    margin-top: 1px;
+}
+.bubble--ours .ad-card__body { color: rgba(255, 255, 255, 0.85); }
+.ad-card__link {
+    display: inline-block;
+    margin-top: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--accent, #E8590C);
+    text-decoration: none;
+}
+.ad-card__link:hover { text-decoration: underline; }
+.bubble--ours .ad-card__link { color: #fff; text-decoration: underline; }
+
 /* The react button. Hidden until the row is hovered on a mouse, always
    there on touch, where there is no hover to reveal it with.
 

@@ -781,6 +781,11 @@
             bubble.classList.add('bubble--media');
         }
 
+        // The ad card sits above the message body, the way WhatsApp shows
+        // it on the phone: the customer is asking about the thing in the
+        // card, and the question underneath rarely names it.
+        if (msg.referral) buildReferralCard(bubble, msg);
+
         switch (kind) {
             case 'image':
             case 'sticker':
@@ -840,6 +845,64 @@
     // escape quotes, so attribute interpolation is injectable. All of
     // them are same-origin api/media.php?id=<int> anyway.
     // ------------------------------------------------------------------
+
+    /**
+     * The Meta ad a conversation started from.
+     *
+     * Every URL goes in through a DOM property, never interpolated into
+     * markup: source_url is a link Meta supplied, and escapeHtml() does
+     * not escape quotes.
+     */
+    function buildReferralCard(bubble, msg) {
+        const ref  = msg.referral || {};
+        const card = document.createElement('div');
+        card.className = 'ad-card';
+
+        if (msg.referral_url) {
+            const img = document.createElement('img');
+            img.className = 'ad-card__image';
+            img.loading = 'lazy';
+            img.alt = '';
+            img.src = msg.referral_url;
+            // A creative we could not download must not leave a broken
+            // image icon sitting in the thread.
+            img.addEventListener('error', () => img.remove());
+            card.appendChild(img);
+        }
+
+        const text = document.createElement('div');
+        text.className = 'ad-card__text';
+
+        const tag = document.createElement('div');
+        tag.className = 'ad-card__tag';
+        tag.textContent = ref.source_type === 'post' ? 'From your post' : 'From your ad';
+        text.appendChild(tag);
+
+        if (ref.headline) {
+            const h = document.createElement('div');
+            h.className = 'ad-card__headline';
+            h.textContent = ref.headline;
+            text.appendChild(h);
+        }
+        if (ref.body) {
+            const b = document.createElement('div');
+            b.className = 'ad-card__body';
+            b.textContent = ref.body;
+            text.appendChild(b);
+        }
+        if (ref.source_url) {
+            const a = document.createElement('a');
+            a.className = 'ad-card__link';
+            a.href = ref.source_url;          // property, never markup
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = 'Open the ad';
+            text.appendChild(a);
+        }
+
+        card.appendChild(text);
+        bubble.appendChild(card);
+    }
 
     function buildTextBody(bubble, msg) {
         const text = document.createElement('div');

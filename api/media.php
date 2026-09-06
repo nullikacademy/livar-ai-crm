@@ -40,6 +40,24 @@ try {
         json_error('Not found', 404);
     }
 
+    // A row can carry two pictures: the media the customer sent, and the
+    // creative of the ad they arrived from. `part` picks between them.
+    // It is a fixed word, never a path -- the path is read from the row.
+    $isReferral = ($_GET['part'] ?? '') === 'referral';
+
+    if ($isReferral) {
+        $path = isset($row['referral_media_path']) ? (string) $row['referral_media_path'] : '';
+        $abs  = $path !== '' ? media_abs_path($path) : null;
+
+        // No lazy re-fetch for this one: an ad creative has no media id to
+        // ask WhatsApp for, only a CDN link that has already expired.
+        if ($abs === null) {
+            json_error('That ad image is no longer available.', 404);
+        }
+
+        media_stream($abs, (string) ($row['referral_media_mime'] ?? ''));
+    }
+
     $path = isset($row['media_path']) ? (string) $row['media_path'] : '';
     $abs  = $path !== '' ? media_abs_path($path) : null;
 

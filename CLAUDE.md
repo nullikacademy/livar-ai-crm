@@ -78,6 +78,18 @@ README** — the template stays placeholders-only.
   `eqFilter()`, and hence `waUserSessionId()` hashing rather than
   embedding it. `session_id` is assigned once: a number appearing later
   fills in blanks via `linkCustomerIdentity()` and never moves the thread.
+- **An ad referral is context, and it expires.** Meta attaches `referral`
+  to the first message after a Click-to-WhatsApp tap. The text goes in
+  `wa_referral` as jsonb — whole, because the field names are still moving
+  (`headline` vs `ad_title`, `image_url` vs `original_image_url`), which is
+  why `extract_referral()` reads every spelling. The creative is fetched
+  onto our own disk immediately: it is a CDN URL with days to live and,
+  unlike WhatsApp media, no id to re-fetch it by, so there is no lazy
+  fallback and `api/media.php?part=referral` only ever serves the local
+  copy. That fetch is the one place this app requests a URL a payload
+  named, so `referral_url_is_safe()` gates it — https, public address
+  only, no redirects. `decodeReferral()` strips the CDN URLs on the way
+  out so the browser never gets a second, rotting source for the picture.
 - **A reaction annotates a row; it is never a row.** WhatsApp sends a
   `reaction` naming the message it belongs to, so `handle_reaction()`
   writes it onto that row's `wa_reaction` and returns — before

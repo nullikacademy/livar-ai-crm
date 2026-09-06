@@ -307,6 +307,7 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
         'select'     => 'id,session_id,message,created_at,direction,wa_status,msg_type,wa_message_id,'
                       . 'media_path,media_mime,media_size,media_name,ai_caption,ai_transcript,'
                       . 'wa_buttons,wa_template,wa_source,wa_reaction,wa_reaction_out,'
+                      . 'wa_referral,referral_media_path,referral_media_mime,'
                       . 'latitude,longitude,place_name,place_address',
         'limit'      => (string) $limit,
     ];
@@ -375,10 +376,20 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
             'reaction'      => $row['wa_reaction'] ?? null,
             'reaction_out'  => $row['wa_reaction_out'] ?? null,
 
+            // The Meta ad this message arrived from, when it did. The
+            // creative is served the same way as any other media -- by id
+            // through api/media.php, never as a path.
+            'referral'      => decodeReferral($row['wa_referral'] ?? null),
+            'referral_url'  => ($row['referral_media_path'] ?? null)
+                ? 'api/media.php?id=' . $id . '&part=referral'
+                : null,
+            'referral_media_mime' => $row['referral_media_mime'] ?? null,
+
             // Server-side only: the draft builder needs the file on disk
             // to attach a real image. api/messages.php strips this before
             // it reaches the browser -- a disk path must never leave here.
             '_media_path'   => $row['media_path'] ?? null,
+            '_referral_path' => $row['referral_media_path'] ?? null,
 
             'latitude'      => isset($row['latitude']) ? (float) $row['latitude'] : null,
             'longitude'     => isset($row['longitude']) ? (float) $row['longitude'] : null,
@@ -388,6 +399,50 @@ function getMessages(string $sessionId, int $sinceId = 0, int $limit = 200): arr
     }
 
     return $messages;
+}
+
+/**
+ * Reads the stored Click-to-WhatsApp ad details back out.
+ *
+ * The creative URLs are dropped here rather than stored separately: they
+ * are Meta CDN links that stop working within days, and the CRM serves
+ * its own downloaded copy through api/media.php. Sending them on would
+ * give the browser a second, rotting source for the same picture. The
+ * ad's permalink (source_url) stays -- that one keeps working, and is how
+ * an agent opens the ad the customer was actually looking at.
+ *
+ * @return array<string, string>|null
+ */
+function decodeReferral(mixed $stored): ?array
+{
+    if (is_string($stored) && $stored !== '') {
+        $stored = json_decode($stored, true);
+    }
+    if (!is_array($stored) || $stored === []) {
+        return null;
+    }
+
+    unset($stored['image_url'], $stored['video_url']);
+
+    $referral = [];
+    foreach ($stored as $key => $value) {
+        if (is_string($value) && $value !== '') {
+            $referral[(string) $key] = $value;
+        }
+    }
+
+    return $referral === [] ? null : $referral;
+}
+
+/**
+ * Records the ad creative the webhook downloaded onto its message.
+ */
+function setMessageReferralMedia(int $id, string $path, string $mime): void
+{
+    Supabase::client()->patch('n8n_chat_history', ['id' => 'eq.' . $id], [
+        'referral_media_path' => $path,
+        'referral_media_mime' => $mime,
+    ]);
 }
 
 /**
@@ -893,7 +948,7 @@ function insertWhatsAppMessage(string $sessionId, array $fields): ?array
 
     foreach ([
         'wa_message_id', 'wa_status', 'wa_error', 'wa_media_id',
-        'wa_buttons', 'wa_template', 'wa_source',
+        'wa_buttons', 'wa_template', 'wa_source', 'wa_referral',
         'media_path', 'media_mime', 'media_size', 'media_name',
         'latitude', 'longitude', 'place_name', 'place_address',
     ] as $optional) {

@@ -36,7 +36,7 @@ try {
     // needs the file on disk. The browser gets api/media.php?id=<n>
     // instead -- a path on the server has no business in a response.
     $messages = array_map(static function (array $msg): array {
-        unset($msg['_media_path']);
+        unset($msg['_media_path'], $msg['_referral_path']);
         return $msg;
     }, getMessages($sessionId, $sinceId, $limit));
 
