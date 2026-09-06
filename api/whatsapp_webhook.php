@@ -381,6 +381,17 @@ function handle_echo(array $echo): ?array
         return apply_echo_change($type, $echo);
     }
 
+    // Nor is a reaction an added message -- an agent long-pressing a
+    // customer's message in the WhatsApp app on their phone. It goes in
+    // wa_reaction_out because the business is the one reacting. Handled
+    // before the customer lookup for the same reason the inbound one is,
+    // and before extract_message_fields(), which has no case for a
+    // reaction and would file it as an "unsupported" bubble.
+    if ($type === 'reaction') {
+        handle_reaction($echo, 'out');
+        return null;
+    }
+
     // `to` is the customer here: in an echo the business is the sender,
     // so reading `from` would file every one of these against our own
     // number. Same for the BSUID -- `to_user_id`, not `user_id`, which on
@@ -580,7 +591,7 @@ function extract_message_fields(array $message, string $direction = 'in'): array
 }
 
 /**
- * Puts a customer's reaction onto the message it was left on.
+ * Puts a reaction onto the message it was left on.
  *
  * `reaction.message_id` is the message being reacted to, not the
  * reaction itself, so this finds that row and annotates it. Nothing is
@@ -588,12 +599,17 @@ function extract_message_fields(array $message, string $direction = 'in'): array
  * one would fill the thread with bubbles that reply to nothing and make
  * the sidebar preview an emoji.
  *
+ * $direction says whose reaction it is. 'in' is the customer's; 'out' is
+ * ours, which is what an echo carries -- an agent long-pressing a message
+ * in the WhatsApp app on their phone. They are separate columns because
+ * both sides can react to the same message.
+ *
  * An absent or empty emoji means the reaction was removed, which the
  * same call handles by clearing the column.
  *
  * @param array<string, mixed> $message
  */
-function handle_reaction(array $message): void
+function handle_reaction(array $message, string $direction = 'in'): void
 {
     $reaction = is_array($message['reaction'] ?? null) ? $message['reaction'] : [];
     $targetId = (string) ($reaction['message_id'] ?? '');
@@ -604,7 +620,7 @@ function handle_reaction(array $message): void
         return;
     }
 
-    if (!setMessageReaction($targetId, $emoji, 'in')) {
+    if (!setMessageReaction($targetId, $emoji, $direction)) {
         // Reacting to something from before this CRM existed, or to a
         // message that never reached it. Nothing to annotate, and not a
         // failure worth retrying.
