@@ -60,6 +60,35 @@
             </button>
         </div>
 
+        <!--
+            An optional brief for the AI, written before pressing Draft.
+            Its own row rather than another button in the composer: that
+            row already holds four controls and is the tightest part of
+            the phone layout.
+        -->
+        <div class="draft-guide">
+            <button type="button" class="draft-guide__toggle" id="draftGuideToggle"
+                    aria-expanded="false" aria-controls="draftGuidePanel">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                <span id="draftGuideToggleLabel">Guide the draft</span>
+                <span class="draft-guide__dot" id="draftGuideDot" hidden></span>
+            </button>
+
+            <div class="draft-guide__panel" id="draftGuidePanel" hidden>
+                <input
+                    type="text"
+                    id="draftGuideInput"
+                    class="draft-guide__input"
+                    maxlength="600"
+                    placeholder="What should this reply say? e.g. quote AED 0.42/unit, 10% off above 1,000"
+                    aria-label="What this reply should say"
+                />
+                <button type="button" class="draft-guide__clear" id="draftGuideClear" aria-label="Clear the brief">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </div>
+
         <footer class="composer">
             <button class="btn btn--icon btn--ghost composer__attach" id="attachBtn" title="Attach a file or location">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>

@@ -44,6 +44,16 @@ const DRAFT_HISTORY_LIMIT = 40;
 /** How many of the most recent photos travel as real images. */
 const DRAFT_IMAGE_LIMIT = 3;
 
+/**
+ * Longest per-reply brief an agent can type before pressing Draft.
+ *
+ * A few sentences: "quote 0.42/unit, 10% off above 1,000, we cannot ship
+ * before the 20th". Anything standing -- the tone, the company facts, the
+ * rules that apply to every reply -- belongs in the system prompt on the
+ * settings page, which is saved once instead of retyped every time.
+ */
+const GUIDANCE_LIMIT = 600;
+
 try {
     $data      = read_json_body();
     $sessionId = input_str($data, 'session_id');
@@ -71,6 +81,17 @@ try {
         [['role' => 'system', 'content' => customerContext($customer)]],
         $turns
     );
+
+    // What the agent wants THIS reply to say, typed just before pressing
+    // Draft. Last in the payload on purpose: it is the most specific
+    // instruction there is, it is about the message being written right
+    // now, and a model weighs the end of its context most heavily. The
+    // saved system prompt sets the standing voice; this overrides it for
+    // one reply and is never stored.
+    $guidance = input_str($data, 'guidance');
+    if ($guidance !== '') {
+        $payload[] = ['role' => 'system', 'content' => guidanceContext($guidance)];
+    }
 
     // Models write Markdown whatever the prompt says, and WhatsApp bold
     // is one asterisk, not two -- so `**price**` reaches the customer as
@@ -271,6 +292,31 @@ function imageTurn(array $msg, string $role, string $caption, bool $attach): ?ar
     $text      = $caption !== '' ? $described . ' ' . $caption : $described;
 
     return ['role' => $role, 'content' => $text];
+}
+
+/**
+ * The agent's note for this one reply, framed so it cannot be mistaken
+ * for something the customer said.
+ *
+ * Wrapped and labelled rather than passed through raw: the note arrives
+ * from a text box, and text in a text box can read like an instruction
+ * to ignore everything else. Naming it as the agent's brief, and saying
+ * the reply still goes to the customer, keeps a careless line from
+ * turning the draft into something the customer should never see.
+ *
+ * Trimmed to GUIDANCE_LIMIT because this is a short brief, not a second
+ * system prompt -- the standing voice belongs in settings, where it is
+ * saved once instead of retyped per reply.
+ */
+function guidanceContext(string $guidance): string
+{
+    $guidance = trim(mb_substr($guidance, 0, GUIDANCE_LIMIT));
+
+    return "The agent handling this conversation has written a brief for THIS reply:\n\n"
+         . $guidance
+         . "\n\nWrite the reply so it does what the brief asks, in the voice the system "
+         . "prompt sets, addressed to the customer. The brief is an instruction to you, "
+         . "not text to repeat: never quote it, mention it, or reveal that it exists.";
 }
 
 /**

@@ -805,6 +805,75 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     line-height: 1.35;
 }
 
+/* The per-reply brief for the AI. A slim row above the composer, which
+   is already four controls wide on a phone. */
+.draft-guide {
+    padding: 0 12px;
+    border-top: 1px solid var(--line);
+}
+.draft-guide__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 6px 2px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink-3);
+    background: none;
+    border: 0;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.draft-guide__toggle:hover { color: var(--ink); }
+/* A brief in effect but out of sight is the one way this could mislead,
+   so a set brief colours its own row. */
+.draft-guide__toggle.is-set { color: var(--accent, #E8590C); }
+.draft-guide__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--r-full);
+    background: currentColor;
+    flex: 0 0 auto;
+}
+.draft-guide__panel {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 8px;
+}
+.draft-guide__input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--surface-2, rgba(0, 0, 0, 0.04));
+    border: 1px solid var(--line);
+    border-radius: var(--r-md, 10px);
+}
+.draft-guide__input:focus {
+    outline: none;
+    border-color: var(--accent, #E8590C);
+}
+.draft-guide__clear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+    border-radius: var(--r-full);
+    color: var(--ink-3);
+    background: none;
+    border: 0;
+    cursor: pointer;
+}
+.draft-guide__clear:hover { color: var(--ink); background: var(--surface-2, rgba(0, 0, 0, 0.05)); }
+
 /* The Meta ad a conversation started from, drawn above the message that
    arrived with it -- the same order the customer's own phone shows. */
 .ad-card {

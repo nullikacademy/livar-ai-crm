@@ -102,6 +102,17 @@ README** — the template stays placeholders-only.
 - **Drafting runs in-app, not in n8n.** `api/draft.php` calls OpenAI
   directly. A draft is never persisted — it goes into the composer, and
   only becomes a row if the agent presses Send.
+- **A per-reply brief is not a second system prompt.** The `guidance`
+  field on `api/draft.php` is the agent saying what THIS reply should
+  say. It goes last in the payload — most specific instruction, and the
+  end of the context is what a model weighs hardest — wrapped by
+  `guidanceContext()`, which labels it as the agent's brief and tells the
+  model never to quote it, so a line typed for the AI cannot reach the
+  customer. Capped at `GUIDANCE_LIMIT`: anything standing belongs in
+  `ai_system_prompt`, saved once. Never stored, and cleared in the
+  frontend on every conversation switch — one customer's pricing note
+  must not shape the next customer's reply. A brief that is set stays
+  visible on the collapsed row for the same reason.
 - **The model and system prompt are database settings, not constants.**
   They live in `livar_settings` so the settings page can change them;
   `SETTING_DEFAULTS` in `db_functions.php` holds the fallbacks. API keys

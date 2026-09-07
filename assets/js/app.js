@@ -63,6 +63,12 @@
         scrollJumpBtn: document.getElementById('scrollJumpBtn'),
         composerInput: document.getElementById('composerInput'),
         generateBtn: document.getElementById('generateBtn'),
+        draftGuideToggle: document.getElementById('draftGuideToggle'),
+        draftGuideToggleLabel: document.getElementById('draftGuideToggleLabel'),
+        draftGuideDot: document.getElementById('draftGuideDot'),
+        draftGuidePanel: document.getElementById('draftGuidePanel'),
+        draftGuideInput: document.getElementById('draftGuideInput'),
+        draftGuideClear: document.getElementById('draftGuideClear'),
         sendBtn: document.getElementById('sendBtn'),
         attachBtn: document.getElementById('attachBtn'),
         attachInput: document.getElementById('attachInput'),
@@ -615,6 +621,9 @@
         state.selectedSessionId = sessionId;
         state.maxMessageId = 0;
         markSelectedInList(sessionId);
+        // A brief written for one customer must not follow the agent into
+        // the next conversation.
+        resetDraftGuide();
 
         el.app.classList.add('is-chat-open');
         el.chatPlaceholder.hidden = true;
@@ -1632,6 +1641,70 @@
     el.generateBtn.addEventListener('click', handleGenerateAnswer);
     el.sendBtn.addEventListener('click', handleSend);
 
+    // ------------------------------------------------------------------
+    // The per-reply brief for the AI
+    // ------------------------------------------------------------------
+
+    el.draftGuideToggle.addEventListener('click', () => {
+        toggleDraftGuide(el.draftGuidePanel.hidden);
+    });
+
+    el.draftGuideClear.addEventListener('click', () => {
+        el.draftGuideInput.value = '';
+        syncDraftGuide();
+        el.draftGuideInput.focus();
+    });
+
+    el.draftGuideInput.addEventListener('input', syncDraftGuide);
+
+    el.draftGuideInput.addEventListener('keydown', (e) => {
+        // Enter drafts straight from here: the brief is written in order
+        // to press Draft, so making someone reach for the button after
+        // typing it is a step for nothing.
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleGenerateAnswer();
+        }
+        if (e.key === 'Escape') {
+            toggleDraftGuide(false);
+            el.composerInput.focus();
+        }
+    });
+
+    function toggleDraftGuide(open) {
+        el.draftGuidePanel.hidden = !open;
+        el.draftGuideToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) el.draftGuideInput.focus();
+        syncDraftGuide();
+    }
+
+    /**
+     * Keeps the collapsed row honest about whether a brief is set.
+     *
+     * A brief that is in effect but out of sight is the one way this
+     * feature could mislead: the agent presses Draft, gets a reply shaped
+     * by something they typed ten minutes ago, and has no idea why. So
+     * the collapsed button shows the brief itself, not a generic label.
+     */
+    function syncDraftGuide() {
+        const text = el.draftGuideInput.value.trim();
+        el.draftGuideDot.hidden = text === '';
+        el.draftGuideToggle.classList.toggle('is-set', text !== '');
+        el.draftGuideToggleLabel.textContent = text === ''
+            ? 'Guide the draft'
+            : (text.length > 48 ? text.slice(0, 48) + '…' : text);
+    }
+
+    /**
+     * Drops the brief. Called on every conversation switch: a note about
+     * one customer's pricing must never silently shape a reply to the
+     * next customer.
+     */
+    function resetDraftGuide() {
+        el.draftGuideInput.value = '';
+        toggleDraftGuide(false);
+    }
+
     /**
      * Asks n8n for a suggested reply and puts it in the composer.
      *
@@ -1656,7 +1729,14 @@
         try {
             const data = await api(API.draft, {
                 method: 'POST',
-                body: JSON.stringify({ session_id: sessionId }),
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    // Left in place after drafting rather than cleared:
+                    // the first draft is often not the one that gets sent,
+                    // and retyping the same brief to try again is the
+                    // annoyance this feature exists to remove.
+                    guidance: el.draftGuideInput.value.trim(),
+                }),
             });
 
             if (sessionId !== state.selectedSessionId) return;

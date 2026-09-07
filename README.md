@@ -708,9 +708,42 @@ naming the budget rather than a bare "empty reply".
    name, company, city, notes. Separate on purpose, so editing the prompt
    cannot accidentally delete the customer context.
 3. Up to 40 turns of conversation, oldest first.
+4. The agent's brief for this one reply, if they wrote one. Last, because
+   it is the most specific instruction there is — see below.
 
 The reply goes into the composer. **Nothing is written to the database
 until the agent presses Send** — a draft they discard leaves no trace.
+
+#### Telling the AI what this reply should say
+
+**Guide the draft**, the slim row just above the composer, takes a short
+brief for the next draft only — *"quote AED 0.42 per unit, 10% off above
+1,000, we cannot ship before the 20th"*. Press Draft (or Enter in the
+box) and the reply is written to do that, in the voice the system prompt
+sets.
+
+It is for the facts of *this* reply, the ones the AI has no way to know.
+Anything standing — the tone, the company details, rules that apply to
+every conversation — belongs in **Settings → System prompt** instead,
+where it is saved once rather than retyped every time. The brief is
+capped at 600 characters for that reason.
+
+Three things about it are deliberate:
+
+- **It is never stored.** Like the draft itself, it lives in the request
+  and nowhere else.
+- **It survives drafting** so you can adjust and re-draft, but it is
+  **cleared whenever you switch conversation** — a note about one
+  customer's pricing must never quietly shape a reply to the next one.
+- **A brief in effect is always visible.** Collapse the row and it still
+  shows the brief, in colour, with a dot. A draft shaped by something
+  typed ten minutes ago and since forgotten is the one way this could
+  mislead an agent.
+
+The brief is passed to the model as an instruction, wrapped and labelled
+as the agent's — the model is told to write the reply the brief asks for
+but never to quote it or mention it, so a line meant for the AI cannot
+end up in front of the customer.
 
 ### WhatsApp is not Markdown
 
