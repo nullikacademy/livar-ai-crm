@@ -250,7 +250,14 @@ README** — the template stays placeholders-only.
 - **Unread is `last_read_at` versus inbound rows only.** A message we
   sent is never unread. The time is stamped server-side by
   `api/read.php`; `last_read_at` is not in `CUSTOMER_PROFILE_FIELDS`, so
-  the details form cannot write it. Adding it backfills existing rows as
+  the details form cannot write it. Marking a conversation UNREAD is the
+  same endpoint (`unread: true`) and the same rule: there is no flag to
+  set, so `markConversationUnread()` moves the timestamp to one
+  microsecond before the last inbound row — badge of 1, not the whole
+  history — and derives it from the database rather than accepting one
+  from the browser, which could otherwise mark anything read or unread at
+  will. Nothing inbound means nothing to be unread about: a 422, not a
+  cheerful 200 that leaves someone waiting for a badge. Adding it backfills existing rows as
   read exactly once, inside a `do $$` guard — with plain
   `add column if not exists` every conversation would badge on upgrade,
   and a re-run would wipe genuine unread state.

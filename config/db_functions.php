@@ -994,6 +994,60 @@ function markConversationRead(string $sessionId): void
 }
 
 /**
+ * Puts the unread badge back on a conversation.
+ *
+ * "Unread" is not a flag -- it is `last_read_at` measured against the
+ * inbound rows -- so marking one unread means moving that timestamp to
+ * just before the last thing the customer said. One microsecond before,
+ * so exactly that message counts and the badge reads 1 rather than
+ * replaying every message the conversation has ever had.
+ *
+ * The timestamp is derived here from a row in the database, never sent by
+ * the browser, for the same reason markConversationRead() stamps the
+ * server's clock: a client that could name this time could mark anything
+ * unread, or read, whenever it liked.
+ *
+ * A conversation with nothing inbound cannot be unread -- there is no
+ * message to catch up on -- and says so by returning false rather than
+ * quietly doing nothing.
+ */
+function markConversationUnread(string $sessionId): bool
+{
+    if ($sessionId === '') {
+        return false;
+    }
+
+    $sb     = Supabase::client();
+    $result = $sb->get('n8n_chat_history', [
+        'session_id' => 'eq.' . $sessionId,
+        'direction'  => 'eq.in',
+        'select'     => 'created_at',
+        'order'      => 'created_at.desc',
+        'limit'      => '1',
+    ]);
+
+    $lastInbound = (string) ($result['rows'][0]['created_at'] ?? '');
+    if ($lastInbound === '') {
+        return false;
+    }
+
+    try {
+        $moment = new DateTimeImmutable($lastInbound);
+    } catch (Throwable $e) {
+        error_log('[Supabase] unreadable created_at on ' . $sessionId . ': ' . $lastInbound);
+        return false;
+    }
+
+    $sb->patch(
+        'livar_customer',
+        ['session_id' => 'eq.' . $sessionId],
+        ['last_read_at' => $moment->modify('-1 microsecond')->format('Y-m-d\TH:i:s.uP')]
+    );
+
+    return true;
+}
+
+/**
  * Stamps the customer's last inbound message time. This single column is
  * what the 24h free-form reply window is computed from, both for the
  * header indicator and for the server-side check in api/send.php.

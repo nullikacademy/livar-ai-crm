@@ -549,8 +549,43 @@
         if (!btn) return;
         const sessionId = menuSessionId;
         closeFolderMenu();
-        if (sessionId) moveToFolder(sessionId, btn.dataset.moveTo);
+        if (!sessionId) return;
+
+        if (btn.id === 'markUnreadBtn') {
+            markUnread(sessionId);
+        } else {
+            moveToFolder(sessionId, btn.dataset.moveTo);
+        }
     });
+
+    /**
+     * Puts the unread badge back, for something read but not yet dealt
+     * with.
+     *
+     * The server works out the timestamp from the last inbound row --
+     * "unread" is last_read_at against the messages, not a flag, and a
+     * time the browser chose could mark anything read or unread at will.
+     * So the badge is painted from the response rather than guessed at
+     * here.
+     */
+    async function markUnread(sessionId) {
+        try {
+            await api(API.read, {
+                method: 'POST',
+                body: JSON.stringify({ session_id: sessionId, unread: true }),
+            });
+
+            const known = state.customers.find((c) => c.session_id === sessionId);
+            if (known) {
+                known.unread_count = Math.max(1, Number(known.unread_count) || 0);
+                syncCustomerListDom();
+            }
+
+            toast('Marked as unread.');
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    }
 
     document.addEventListener('click', (e) => {
         if (!el.folderMenu.hidden && !el.folderMenu.contains(e.target)) closeFolderMenu();

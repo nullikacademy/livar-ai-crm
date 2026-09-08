@@ -641,10 +641,19 @@ To move one:
 - **Right-click** the conversation in the sidebar, on a computer.
 - **Press and hold** it, on a phone.
 
-Either opens a small menu with the three folders and a tick beside the
-one it is in now, so the menu also answers "where is this?". A press that
-turns into a scroll does not open the menu — that would fire constantly
-while flicking through the list.
+Either opens a small menu with **Mark as unread** and the three folders,
+a tick beside the one it is in now, so the menu also answers "where is
+this?". A press that turns into a scroll does not open the menu — that
+would fire constantly while flicking through the list.
+
+**Mark as unread** puts the badge back on something you have read but
+cannot deal with yet. Unread is not a flag here — it is `last_read_at`
+measured against the inbound messages — so this moves that timestamp to
+a microsecond before the customer's last message. The badge reads **1**,
+not the whole history, and the timestamp is worked out on the server from
+a row in the database: a browser that could name it could mark anything
+read or unread at will. A conversation with nothing inbound cannot be
+marked unread and says so rather than silently doing nothing.
 
 The counts cover every tab on every load, so moving a chat updates both
 the tab it left and the tab it joined. Searching narrows the counts too:

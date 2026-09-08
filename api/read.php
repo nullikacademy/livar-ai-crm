@@ -3,11 +3,18 @@
  * api/read.php
  *
  *   POST /api/read.php   body: { "session_id": "wa_34600111222" }
+ *   POST /api/read.php   body: { "session_id": "...", "unread": true }
  *
  * Marks a conversation as read, which clears its unread badge in the
  * sidebar. Called when an agent opens a conversation, and again when a
  * message arrives in the one already on screen -- a message you are
  * looking at is not unread.
+ *
+ * `unread: true` puts the badge back, for an agent who has read something
+ * they cannot deal with yet. Both directions live here because both are
+ * the same fact -- where `last_read_at` sits relative to the inbound rows
+ * -- and splitting them across two endpoints would invite one of them to
+ * be written from somewhere that has no business touching it.
  *
  * Its own endpoint rather than a field on api/customers.php: `last_read_at`
  * is not a profile fact somebody types, it is a record of something that
@@ -45,6 +52,17 @@ try {
     // 404 instead of silently updating nothing and reporting success.
     if (getCustomer($sessionId) === null) {
         json_error('Customer not found', 404);
+    }
+
+    if (!empty($data['unread'])) {
+        if (!markConversationUnread($sessionId)) {
+            // Nothing inbound, so there is nothing to be unread about.
+            // Said out loud rather than answered with a cheerful 200 that
+            // leaves the agent watching for a badge that cannot appear.
+            json_error('This conversation has no incoming messages to mark unread.', 422);
+        }
+
+        json_response(['success' => true, 'unread' => true]);
     }
 
     markConversationRead($sessionId);

@@ -68,6 +68,17 @@
     -->
     <div class="folder-menu" id="folderMenu" role="menu" hidden>
         <div class="folder-menu__title" id="folderMenuTitle"></div>
+
+        <button type="button" class="folder-menu__item" role="menuitem" id="markUnreadBtn">
+            <span class="folder-menu__check" aria-hidden="true">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M22 6l-10 7L2 6"/></svg>
+            </span>
+            <span>Mark as unread</span>
+        </button>
+
+        <div class="folder-menu__sep" role="separator"></div>
+        <div class="folder-menu__label">Move to</div>
+
         <?php foreach (CUSTOMER_FOLDERS as $key => $name): ?>
         <button type="button" class="folder-menu__item" role="menuitem"
                 data-move-to="<?= htmlspecialchars($key, ENT_QUOTES) ?>">
