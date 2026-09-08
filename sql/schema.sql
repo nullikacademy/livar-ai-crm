@@ -43,7 +43,22 @@ alter table public.livar_customer
     -- coexistence webhook. Distinct from wa_profile_name, which is what
     -- the customer calls themselves, and from first/last_name, which an
     -- agent typed here. Never overwrites those.
-    add column if not exists wa_contact_name text;
+    add column if not exists wa_contact_name text,
+    -- Which folder tab the conversation sits under: 'leads' | 'quotation'
+    -- | 'customers'. See CUSTOMER_FOLDERS in config/db_functions.php.
+    --
+    -- The default covers new rows; existing ones stay null and are read
+    -- as 'leads' by coalesce() everywhere. That is deliberate -- an
+    -- UPDATE backfill would be a write across the whole table for a value
+    -- that is already the answer, and re-running this file would repeat
+    -- it. Nothing distinguishes a null folder from a deliberate 'leads'.
+    add column if not exists folder text default 'leads';
+
+-- The sidebar reads one folder at a time, so this is the filter on every
+-- list query. Expression index because the column is read through
+-- coalesce() for the rows that predate it.
+create index if not exists idx_livar_customer_folder
+    on public.livar_customer ((coalesce(folder, 'leads')));
 
 -- When an agent last opened this conversation. Anything inbound after
 -- it is unread, and drives the badge in the sidebar.
@@ -275,12 +290,18 @@ alter table public.livar_settings   enable row level security;
 -- refuses to `create or replace` a function whose `returns table` differs.
 -- Dropping first is what keeps this file re-runnable against a database
 -- that already has the older version.
+-- Both signatures are dropped: the three-argument version is what an
+-- install from before folders has, and the four-argument one is what a
+-- re-run of this file is replacing.
 drop function if exists public.get_customers_with_preview(text, int, int);
+drop function if exists public.get_customers_with_preview(text, int, int, text);
 
 create or replace function public.get_customers_with_preview(
     p_search text default '',
     p_limit  int  default 30,
-    p_offset int  default 0
+    p_offset int  default 0,
+    -- '' means every folder. Anything else filters to one tab.
+    p_folder text default ''
 )
 returns table (
     id                 bigint,
@@ -312,6 +333,8 @@ returns table (
     -- username. They have no phone number, so without this the sidebar
     -- has nothing at all to call them by.
     wa_username        text,
+    -- Which folder tab this conversation is filed under.
+    folder             text,
     -- Inbound messages the agent has not seen. Counted here rather than
     -- fetched per row afterwards, for the same reason the preview is.
     unread_count       bigint,
@@ -319,7 +342,13 @@ returns table (
     last_message_type  text,
     last_activity_id   bigint,
     last_activity_at   timestamptz,
-    total_count        bigint
+    total_count        bigint,
+    -- {"leads": 12, "quotation": 3} -- how many conversations sit behind
+    -- each tab, counted over the SEARCH-filtered set but before the
+    -- folder filter, so the numbers describe the tabs the agent is
+    -- looking at. jsonb rather than a column per folder so adding a
+    -- fourth folder never touches this signature again.
+    folder_counts      jsonb
 )
 language sql
 stable
@@ -339,14 +368,30 @@ as $$
             c.wa_username ilike '%' || p_search || '%'
         )
     ),
+    -- The search-filtered rows narrowed to the tab being shown. Counts
+    -- below are taken from `filtered` (every tab) and the page itself
+    -- from `in_folder` (this tab), which is what lets the other tabs show
+    -- a number without a second round trip.
+    in_folder as (
+        select * from filtered
+        where p_folder = '' or coalesce(folder, 'leads') = p_folder
+    ),
     counted as (
-        select count(*) as total from filtered
+        select
+            (select count(*) from in_folder) as total,
+            (select coalesce(jsonb_object_agg(g.folder, g.n), '{}'::jsonb)
+               from (
+                   select coalesce(folder, 'leads') as folder, count(*) as n
+                     from filtered
+                    group by 1
+               ) g) as folder_counts
     )
     select
         f.id, f.created_at, f.session_id, f.first_name, f.last_name, f.username,
         f.phone, f.country, f.email, f.city, f.address, f.tax_id, f.details,
         f.wa_id, f.wa_profile_name, f.last_inbound_at, f.avatar_path, f.label, f.wa_contact_name,
         f.wa_username,
+        coalesce(f.folder, 'leads') as folder,
         -- Only INBOUND rows count: a reply we sent is not something to
         -- catch up on. A conversation never opened has last_read_at null,
         -- which the schema backfills on install so only genuinely new
@@ -380,8 +425,9 @@ as $$
         lm.type                                    as last_message_type,
         lm.id                                      as last_activity_id,
         coalesce(lm.created_at, f.created_at)      as last_activity_at,
-        counted.total
-    from filtered f
+        counted.total,
+        counted.folder_counts
+    from in_folder f
     left join lateral (
         select
             h.message->>'content' as content,
@@ -406,5 +452,5 @@ $$;
 
 -- service_role already bypasses grants/RLS, but grant explicitly too in
 -- case you also want the anon/authenticated roles to be able to call it.
-grant execute on function public.get_customers_with_preview(text, int, int)
+grant execute on function public.get_customers_with_preview(text, int, int, text)
     to anon, authenticated, service_role;

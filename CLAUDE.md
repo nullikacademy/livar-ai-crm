@@ -138,6 +138,18 @@ README** — the template stays placeholders-only.
   `SETTING_AGENT_EDITABLE`. `customerForBrowser()` swaps `avatar_path`
   for an `api/avatar.php` URL on the way out, so it never leaves the
   server at all.
+- **Folders are a pipeline, and Leads is the floor.** `CUSTOMER_FOLDERS`
+  is the closed set; the sidebar tabs and the move menu are both rendered
+  from it server-side, so neither can offer a folder `api/customers.php`
+  would refuse. A row with no folder reads as `'leads'` through
+  `coalesce()` everywhere, which is what made this safe to add to a full
+  database. An unrecognised folder on a PUT is a **422, not a fallback**:
+  quietly filing a conversation under Leads is a move the agent did not
+  ask for. `get_customers_with_preview()` counts the tabs from the
+  search-filtered set *before* the folder filter, so the other tabs show
+  a number without a second round trip — but the counts ride on the rows,
+  so `getCustomers()` re-asks across all folders when the page comes back
+  empty, or an empty tab would report every other tab as empty too.
 - **A customer's country is derived, not stored — except once.**
   `config/countries.php` maps a dialling prefix to a country on every
   read, so old rows get a flag without a migration and fixing a number

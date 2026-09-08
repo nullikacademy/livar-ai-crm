@@ -625,6 +625,31 @@ Media accumulates against your hosting quota with no pruning job. The
 webhook logs the store's total size periodically; watch for
 `[WhatsApp] media store now holds …` in the error log.
 
+### Folders
+
+The sidebar is split into three tabs — **Leads**, **Quotation**,
+**Customers** — with a count on each. It is a pipeline: an enquiry
+arrives as a lead, becomes a quotation once a price has gone out, and a
+customer once they buy.
+
+**Every conversation starts in Leads**, including every one that already
+existed before this shipped. Nothing is filed automatically; moving a
+chat is the agent saying something happened.
+
+To move one:
+
+- **Right-click** the conversation in the sidebar, on a computer.
+- **Press and hold** it, on a phone.
+
+Either opens a small menu with the three folders and a tick beside the
+one it is in now, so the menu also answers "where is this?". A press that
+turns into a scroll does not open the menu — that would fire constantly
+while flicking through the list.
+
+The counts cover every tab on every load, so moving a chat updates both
+the tab it left and the tab it joined. Searching narrows the counts too:
+they describe the tabs as you are currently filtering them.
+
 ### Customers
 
 **New Chat** creates a blank `livar_customer` row and opens the details

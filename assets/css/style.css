@@ -805,6 +805,90 @@ input, textarea { -webkit-appearance: none; appearance: none; }
     line-height: 1.35;
 }
 
+/* The pipeline tabs above the conversation list. */
+.folder-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 10px 8px;
+    border-bottom: 1px solid var(--line);
+}
+.folder-tab {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-width: 0;
+    padding: 7px 6px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink-3);
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.folder-tab:hover { color: var(--ink); }
+.folder-tab.is-active {
+    color: var(--accent, #E8590C);
+    border-bottom-color: var(--accent, #E8590C);
+    font-weight: 600;
+}
+.folder-tab__count {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink-3);
+}
+.folder-tab__count:empty { display: none; }
+.folder-tab.is-active .folder-tab__count { color: inherit; }
+
+/* Move-to-folder menu, positioned at the pointer or the long-press. */
+.folder-menu {
+    position: fixed;
+    z-index: 70;
+    min-width: 180px;
+    padding: 5px;
+    border-radius: var(--r-md, 10px);
+    background: var(--surface);
+    border: 1px solid var(--line-strong, var(--line));
+    box-shadow: var(--shadow-2);
+    animation: riseIn var(--t-fast) var(--ease) both;
+}
+.folder-menu__title {
+    padding: 5px 10px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 4px;
+}
+.folder-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 10px;
+    font: inherit;
+    font-size: 13.5px;
+    color: var(--ink);
+    text-align: left;
+    background: none;
+    border: 0;
+    border-radius: var(--r-sm, 7px);
+    cursor: pointer;
+}
+.folder-menu__item:hover { background: var(--surface-2, rgba(0, 0, 0, 0.05)); }
+.folder-menu__check { width: 13px; color: transparent; font-size: 12px; }
+.folder-menu__item.is-current { font-weight: 600; }
+.folder-menu__item.is-current .folder-menu__check { color: var(--accent, #E8590C); }
+
 /* The per-reply brief for the AI. A slim row above the composer, which
    is already four controls wide on a phone. */
 .draft-guide {

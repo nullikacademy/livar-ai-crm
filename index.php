@@ -5,6 +5,9 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/config/auth.php';
+// The sidebar renders its folder tabs from CUSTOMER_FOLDERS, so the tabs
+// and the move menu cannot drift apart from what the API accepts.
+require_once __DIR__ . '/config/db_functions.php';
 
 // Page load, not an API call: unauthenticated visitors get redirected to
 // the login form rather than a JSON 401.

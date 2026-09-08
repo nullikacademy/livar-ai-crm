@@ -23,6 +23,25 @@
         </button>
     </div>
 
+    <!--
+        The pipeline. Rendered from CUSTOMER_FOLDERS so the tabs and the
+        move menu can never disagree about what folders exist.
+    -->
+    <div class="folder-tabs" id="folderTabs" role="tablist" aria-label="Folders">
+        <?php foreach (CUSTOMER_FOLDERS as $key => $name): ?>
+        <button
+            type="button"
+            class="folder-tab<?= $key === CUSTOMER_FOLDER_DEFAULT ? ' is-active' : '' ?>"
+            role="tab"
+            data-folder="<?= htmlspecialchars($key, ENT_QUOTES) ?>"
+            aria-selected="<?= $key === CUSTOMER_FOLDER_DEFAULT ? 'true' : 'false' ?>"
+        >
+            <span class="folder-tab__name"><?= htmlspecialchars($name, ENT_QUOTES) ?></span>
+            <span class="folder-tab__count" data-count-for="<?= htmlspecialchars($key, ENT_QUOTES) ?>"></span>
+        </button>
+        <?php endforeach; ?>
+    </div>
+
     <div class="customer-list" id="customerList" role="listbox" aria-label="Customers">
         <!-- Skeleton loading state, replaced by JS on first load -->
         <div class="skeleton-list" id="customerSkeleton">
@@ -40,5 +59,21 @@
 
     <div class="customer-list__empty" id="customerListEmpty" hidden>
         <p>No customers match that search.</p>
+    </div>
+
+    <!--
+        Move-to-folder menu. Right-click on a desktop, long-press on a
+        phone -- the two gestures that already mean "what can I do with
+        this?" on their platform.
+    -->
+    <div class="folder-menu" id="folderMenu" role="menu" hidden>
+        <div class="folder-menu__title" id="folderMenuTitle"></div>
+        <?php foreach (CUSTOMER_FOLDERS as $key => $name): ?>
+        <button type="button" class="folder-menu__item" role="menuitem"
+                data-move-to="<?= htmlspecialchars($key, ENT_QUOTES) ?>">
+            <span class="folder-menu__check" aria-hidden="true">✓</span>
+            <span><?= htmlspecialchars($name, ENT_QUOTES) ?></span>
+        </button>
+        <?php endforeach; ?>
     </div>
 </aside>

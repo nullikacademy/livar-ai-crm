@@ -30,7 +30,7 @@ require_once __DIR__ . '/media.php';
 const CUSTOMER_PROFILE_FIELDS = [
     'first_name', 'last_name', 'username', 'phone',
     'country', 'email', 'city', 'address', 'tax_id', 'details',
-    'wa_id', 'wa_profile_name', 'label',
+    'wa_id', 'wa_profile_name', 'label', 'folder',
 ];
 
 /**
@@ -47,6 +47,24 @@ const CUSTOMER_LABELS = [
     'new' => 'New customer',
     'old' => 'Old customer',
 ];
+
+/**
+ * The folder tabs a conversation can sit under, in the order they show.
+ *
+ * A pipeline, not a taxonomy: an enquiry arrives as a lead, becomes a
+ * quotation once a price has gone out, and a customer once they buy.
+ * Every conversation starts in the first one -- a row with no folder at
+ * all reads as 'leads', which is what makes this safe to add to a
+ * database full of existing conversations without touching a single one.
+ */
+const CUSTOMER_FOLDERS = [
+    'leads'     => 'Leads',
+    'quotation' => 'Quotation',
+    'customers' => 'Customers',
+];
+
+/** The folder a conversation is in when nothing says otherwise. */
+const CUSTOMER_FOLDER_DEFAULT = 'leads';
 
 /**
  * Message types the CRM stores media on disk for.
@@ -136,10 +154,19 @@ function waUserSessionId(string $userId): string
  * Postgres function (see sql/schema.sql) so the join + search + paging
  * all happen in one round trip instead of N+1 REST calls.
  *
- * @return array{rows: array<int, array<string, mixed>>, hasMore: bool}
+ * $folder narrows to one tab; '' returns every folder. The per-folder
+ * counts come back from the same call, counted before the folder filter,
+ * so the tabs an agent is not looking at still show a number without a
+ * second round trip.
+ *
+ * @return array{rows: array<int, array<string, mixed>>, hasMore: bool, counts: array<string, int>}
  */
-function getCustomers(int $limit = CUSTOMERS_PAGE_SIZE, int $offset = 0, string $search = ''): array
-{
+function getCustomers(
+    int $limit = CUSTOMERS_PAGE_SIZE,
+    int $offset = 0,
+    string $search = '',
+    string $folder = ''
+): array {
     $sb = Supabase::client();
 
     // Ask for one extra row so we know whether another page exists.
@@ -147,7 +174,28 @@ function getCustomers(int $limit = CUSTOMERS_PAGE_SIZE, int $offset = 0, string 
         'p_search' => $search,
         'p_limit'  => $limit + 1,
         'p_offset' => $offset,
+        'p_folder' => $folder,
     ]);
+
+    // Read before the extra row is popped and before the columns are
+    // stripped -- every row carries the same counts.
+    $counts = folderCountsFrom($rows[0]['folder_counts'] ?? null);
+
+    // An empty tab returns no rows, and the counts travel ON the rows, so
+    // there is nothing to read: opening a folder that happens to be empty
+    // would report every OTHER folder as empty too. One more call, asked
+    // across all folders and only when the page came back empty, is what
+    // keeps the tabs honest. A database with no customers at all needs no
+    // second call -- zero really is the answer then.
+    if ($rows === [] && $offset === 0) {
+        $any = $sb->rpc('get_customers_with_preview', [
+            'p_search' => $search,
+            'p_limit'  => 1,
+            'p_offset' => 0,
+            'p_folder' => '',
+        ]);
+        $counts = folderCountsFrom($any[0]['folder_counts'] ?? null);
+    }
 
     $hasMore = count($rows) > $limit;
     if ($hasMore) {
@@ -157,11 +205,35 @@ function getCustomers(int $limit = CUSTOMERS_PAGE_SIZE, int $offset = 0, string 
     // Normalize field names to match what the frontend expects
     // (created_at, last_message, last_message_type, ...).
     $rows = array_map(static function (array $row): array {
-        unset($row['total_count'], $row['last_activity_id']);
+        unset($row['total_count'], $row['last_activity_id'], $row['folder_counts']);
         return $row;
     }, $rows);
 
-    return ['rows' => $rows, 'hasMore' => $hasMore];
+    return ['rows' => $rows, 'hasMore' => $hasMore, 'counts' => $counts];
+}
+
+/**
+ * Every folder's count, including the ones with nothing in them.
+ *
+ * The RPC aggregates only folders that have rows, so a tab that has just
+ * been emptied would otherwise vanish from the response and keep its old
+ * number on screen. Starting from CUSTOMER_FOLDERS makes a zero explicit.
+ *
+ * @return array<string, int>
+ */
+function folderCountsFrom(mixed $raw): array
+{
+    if (is_string($raw)) {
+        $raw = json_decode($raw, true);
+    }
+    $raw = is_array($raw) ? $raw : [];
+
+    $counts = [];
+    foreach (array_keys(CUSTOMER_FOLDERS) as $folder) {
+        $counts[$folder] = (int) ($raw[$folder] ?? 0);
+    }
+
+    return $counts;
 }
 
 /**
@@ -194,6 +266,23 @@ function normalizeCustomerLabel(mixed $label): ?string
 
     $label = strtolower(trim($label));
     return isset(CUSTOMER_LABELS[$label]) ? $label : null;
+}
+
+/**
+ * A folder name from the browser, or null if it is not one of ours.
+ *
+ * Same closed-set rule as the label: the tabs stop being useful the
+ * moment "Quotation"/"quotation "/"quote" are three different folders,
+ * and this column is written straight from a request body.
+ */
+function normalizeCustomerFolder(mixed $folder): ?string
+{
+    if (!is_string($folder)) {
+        return null;
+    }
+
+    $folder = strtolower(trim($folder));
+    return isset(CUSTOMER_FOLDERS[$folder]) ? $folder : null;
 }
 
 /**

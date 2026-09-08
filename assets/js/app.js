@@ -30,6 +30,13 @@
         old: 'Old',
     };
 
+    /** How each folder reads in a toast. Mirrors CUSTOMER_FOLDERS. */
+    const FOLDER_NAMES = {
+        leads: 'Leads',
+        quotation: 'Quotation',
+        customers: 'Customers',
+    };
+
     /**
      * WhatsApp only allows a free-form reply within 24h of the
      * customer's last message. Kept in sync with WHATSAPP_WINDOW_HOURS.
@@ -44,6 +51,9 @@
         sidebar: document.getElementById('sidebar'),
         searchInput: document.getElementById('searchInput'),
         searchClear: document.getElementById('searchClear'),
+        folderTabs: document.getElementById('folderTabs'),
+        folderMenu: document.getElementById('folderMenu'),
+        folderMenuTitle: document.getElementById('folderMenuTitle'),
         customerList: document.getElementById('customerList'),
         customerSkeleton: document.getElementById('customerSkeleton'),
         customerListEmpty: document.getElementById('customerListEmpty'),
@@ -105,6 +115,10 @@
         hasMore: true,
         isLoadingCustomers: false,
         search: '',
+        // Which folder tab the sidebar is showing. Mirrors
+        // CUSTOMER_FOLDER_DEFAULT: a conversation nobody has filed is a
+        // lead, and that is the tab the inbox opens on.
+        folder: 'leads',
         selectedSessionId: null,
         selectedCustomer: null,
         messages: [],
@@ -373,8 +387,13 @@
                 limit: PAGE_SIZE,
                 offset: state.offset,
                 search: state.search,
+                folder: state.folder,
             });
             const data = await api(`${API.customers}?${params.toString()}`);
+
+            // Every response carries the counts for all folders, so the
+            // tabs stay right even when the answer is an empty page.
+            paintFolderCounts(data.counts);
 
             if (reset) {
                 state.customers = [];
@@ -397,6 +416,178 @@
         } finally {
             el.customerSkeleton.hidden = true;
             state.isLoadingCustomers = false;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Folders
+    //
+    // A three-stage pipeline in the sidebar: Leads, Quotation, Customers.
+    // The tabs and the move menu are both rendered server-side from
+    // CUSTOMER_FOLDERS, so neither can offer a folder the API would
+    // refuse.
+    // ------------------------------------------------------------------
+
+    function paintFolderCounts(counts) {
+        if (!counts) return;
+        Object.entries(counts).forEach(([folder, n]) => {
+            const badge = el.folderTabs.querySelector(`[data-count-for="${cssEscape(folder)}"]`);
+            if (badge) badge.textContent = n > 0 ? String(n) : '';
+        });
+    }
+
+    function selectFolder(folder) {
+        if (folder === state.folder) return;
+        state.folder = folder;
+
+        el.folderTabs.querySelectorAll('.folder-tab').forEach((tab) => {
+            const active = tab.dataset.folder === folder;
+            tab.classList.toggle('is-active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+
+        el.customerListEmpty.hidden = true;
+        loadCustomers({ reset: true });
+    }
+
+    el.folderTabs.addEventListener('click', (e) => {
+        const tab = e.target.closest('.folder-tab');
+        if (tab) selectFolder(tab.dataset.folder);
+    });
+
+    // -- the move menu -------------------------------------------------
+
+    let menuSessionId = null;
+
+    function openFolderMenu(item, x, y) {
+        const sessionId = item.dataset.sessionId;
+        if (!sessionId) return;
+
+        menuSessionId = sessionId;
+        const customer = state.customers.find((c) => c.session_id === sessionId);
+        el.folderMenuTitle.textContent = customer ? fullName(customer) : 'Move to folder';
+
+        // Tick the folder it is already in, so the menu answers "where is
+        // this?" as well as offering to move it.
+        const current = (customer && customer.folder) || 'leads';
+        el.folderMenu.querySelectorAll('.folder-menu__item').forEach((btn) => {
+            btn.classList.toggle('is-current', btn.dataset.moveTo === current);
+        });
+
+        el.folderMenu.hidden = false;
+
+        // Placed after unhiding so the measured size is the real one, and
+        // clamped so a row near the bottom of a phone screen does not open
+        // a menu off the edge.
+        const rect = el.folderMenu.getBoundingClientRect();
+        const left = Math.min(x, window.innerWidth - rect.width - 8);
+        const top  = Math.min(y, window.innerHeight - rect.height - 8);
+        el.folderMenu.style.left = Math.max(8, left) + 'px';
+        el.folderMenu.style.top  = Math.max(8, top) + 'px';
+    }
+
+    function closeFolderMenu() {
+        el.folderMenu.hidden = true;
+        menuSessionId = null;
+    }
+
+    el.customerList.addEventListener('contextmenu', (e) => {
+        const item = e.target.closest('.customer-item');
+        if (!item) return;
+        e.preventDefault();
+        openFolderMenu(item, e.clientX, e.clientY);
+    });
+
+    // Long-press is the touch equivalent. A press that turns into a drag
+    // is a scroll, not a menu, so movement cancels it -- otherwise the
+    // menu fires in the middle of flicking through the list.
+    let pressTimer = null;
+    let pressOrigin = null;
+
+    el.customerList.addEventListener('touchstart', (e) => {
+        const item = e.target.closest('.customer-item');
+        if (!item || e.touches.length !== 1) return;
+
+        const touch = e.touches[0];
+        pressOrigin = { x: touch.clientX, y: touch.clientY };
+        pressTimer = window.setTimeout(() => {
+            pressTimer = null;
+            openFolderMenu(item, pressOrigin.x, pressOrigin.y);
+        }, 500);
+    }, { passive: true });
+
+    function cancelPress() {
+        if (pressTimer !== null) {
+            clearTimeout(pressTimer);
+            pressTimer = null;
+        }
+    }
+
+    el.customerList.addEventListener('touchmove', (e) => {
+        if (pressTimer === null || !pressOrigin) return;
+        const touch = e.touches[0];
+        if (Math.abs(touch.clientX - pressOrigin.x) > 10 ||
+            Math.abs(touch.clientY - pressOrigin.y) > 10) {
+            cancelPress();
+        }
+    }, { passive: true });
+
+    el.customerList.addEventListener('touchend', cancelPress, { passive: true });
+    el.customerList.addEventListener('touchcancel', cancelPress, { passive: true });
+
+    // A tap that follows the long-press menu opening would otherwise also
+    // select the conversation underneath it.
+    el.customerList.addEventListener('click', (e) => {
+        if (!el.folderMenu.hidden) {
+            e.stopPropagation();
+            closeFolderMenu();
+        }
+    }, true);
+
+    el.folderMenu.addEventListener('click', (e) => {
+        const btn = e.target.closest('.folder-menu__item');
+        if (!btn) return;
+        const sessionId = menuSessionId;
+        closeFolderMenu();
+        if (sessionId) moveToFolder(sessionId, btn.dataset.moveTo);
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!el.folderMenu.hidden && !el.folderMenu.contains(e.target)) closeFolderMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeFolderMenu();
+    });
+    window.addEventListener('scroll', closeFolderMenu, true);
+
+    /**
+     * Files a conversation under a different folder.
+     *
+     * The row is dropped from the list straight away when it no longer
+     * belongs in the open tab -- waiting for a refetch leaves it sitting
+     * somewhere it visibly is not. The counts come back from the reload,
+     * not from arithmetic here, so they cannot drift out of step with the
+     * database.
+     */
+    async function moveToFolder(sessionId, folder) {
+        const customer = state.customers.find((c) => c.session_id === sessionId);
+        if (customer && (customer.folder || 'leads') === folder) return;
+
+        try {
+            await api(`${API.customers}?session_id=${encodeURIComponent(sessionId)}`, {
+                method: 'PUT',
+                body: JSON.stringify({ folder }),
+            });
+
+            if (customer) customer.folder = folder;
+            if (state.selectedCustomer && state.selectedCustomer.session_id === sessionId) {
+                state.selectedCustomer.folder = folder;
+            }
+
+            toast(`Moved to ${FOLDER_NAMES[folder] || folder}.`);
+            loadCustomers({ reset: true });
+        } catch (err) {
+            toast(err.message, 'error');
         }
     }
 

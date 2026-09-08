@@ -232,7 +232,7 @@ function checkSchema(): array
                             . 'wa_reaction,wa_reaction_out,'
                             . 'wa_referral,referral_media_path,referral_media_mime',
         'livar_customer'   => 'id,wa_id,wa_profile_name,last_inbound_at,avatar_path,label,wa_contact_name,'
-                            . 'wa_user_id,wa_username',
+                            . 'wa_user_id,wa_username,folder',
         // Its own table, so a missing one is a missing probe rather than
         // a missing column -- PostgREST 404s the relation instead.
         'livar_wa_contact' => 'wa_id,full_name,first_name',
@@ -269,7 +269,7 @@ function checkSchema(): array
             'get_customers_with_preview',
             ['p_search' => '', 'p_limit' => 1, 'p_offset' => 0],
             ['select' => 'session_id,wa_id,last_inbound_at,last_activity_at,avatar_path,label,'
-                       . 'wa_contact_name,wa_username']
+                       . 'wa_contact_name,wa_username,folder,folder_counts']
         );
         $detail[] = 'get_customers_with_preview: current version';
     } catch (SupabaseException $e) {
