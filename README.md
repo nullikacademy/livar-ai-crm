@@ -579,11 +579,21 @@ Two ways in, because the reason you need one differs:
 - **The window is open** — 📎 → **Send a template**, for a follow-up you
   want to send anyway.
 
-The picker lists **the message itself**, not just the template name, so
+Both open the same flyout: hover the row on a computer, tap it on a
+phone. It lists **the message itself**, not just the template name, so
 templates whose names differ only by an `_ar` suffix are told apart at a
-glance. Tap one, check the preview, send: two taps for a template with no
-variables. One with `{{1}}` placeholders shows an input per value and a
-live preview of the finished message.
+glance — and clicking one with no placeholders **sends it**. What you
+read in the menu is what goes out; there is nothing left to confirm.
+
+A template with `{{1}}` placeholders opens the full dialog instead, with
+that template already chosen, an input per value and a live preview —
+there is nowhere in a menu to type them.
+
+The list is fetched **once, when the page loads**, and kept. It is the
+same for every conversation and changes only when someone edits it in
+360dialog, so asking Meta again on every open was a round trip between
+the click and anything appearing. If you add a template in 360dialog,
+reload the page to pick it up.
 
 For a customer in an Arabic-speaking country the Arabic templates are
 listed first. That is ordering only — every template stays on the list

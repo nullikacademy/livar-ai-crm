@@ -132,6 +132,14 @@
         // once at boot: it is the same file for every conversation, and
         // asking on every attach-menu open would be a request per tap.
         catalog: null,
+        // The approved templates, fetched once at boot and kept. Same for
+        // every conversation, and a round trip to Meta between the tap
+        // and the list appearing is what made picking one feel slow.
+        // null means "not loaded yet or the load failed", which is what
+        // makes the next open retry.
+        templates: null,
+        templatesLoading: null,
+        templatesError: '',
     };
 
     /** How often to look for new rows, in ms. */
@@ -2103,10 +2111,10 @@
         menu.id = 'attachMenu';
 
         /** One row of the menu. `icon` is trusted markup from this file. */
-        function addItem(icon, label, onClick, { note = '', disabled = false } = {}) {
+        function addItem(icon, label, onClick, { note = '', disabled = false, submenu = false } = {}) {
             const item = document.createElement('button');
             item.type = 'button';
-            item.className = 'attach-menu__item';
+            item.className = 'attach-menu__item' + (submenu ? ' attach-menu__item--parent' : '');
             item.disabled = disabled;
             item.innerHTML = icon;
 
@@ -2121,10 +2129,32 @@
                 item.appendChild(hint);
             }
 
-            item.addEventListener('click', () => {
+            if (submenu) {
+                const chevron = document.createElement('span');
+                chevron.className = 'attach-menu__chevron';
+                chevron.setAttribute('aria-hidden', 'true');
+                chevron.textContent = '›';
+                item.appendChild(chevron);
+            }
+
+            item.addEventListener('click', (e) => {
+                // A parent keeps its menu open -- closing it would take the
+                // submenu down with it.
+                if (submenu) {
+                    e.stopPropagation();
+                    onClick();
+                    return;
+                }
                 closeAttachMenu();
                 onClick();
             });
+
+            // Moving onto any other row dismisses a submenu left open by
+            // the row above it.
+            if (!submenu) {
+                item.addEventListener('mouseenter', closeTemplateMenu);
+            }
+
             menu.appendChild(item);
             return item;
         }
@@ -2153,9 +2183,17 @@
         // a follow-up could not be sent to someone whose window happened
         // to be open -- the one case where the CRM was hiding a thing it
         // could perfectly well do.
-        addItem(templateIconSvg(), 'Send a template', openTemplateDialog, {
-            note: 'Approved follow-up message',
-        });
+        //
+        // A submenu rather than a dialog: the templates are already in
+        // memory, so there is nothing to wait for and no reason to cover
+        // the conversation with a modal to pick from four things.
+        const templateItem = addItem(templateIconSvg(), 'Send a template', () => {
+            openTemplateMenu(templateItem);
+        }, { note: 'Approved follow-up message', submenu: true });
+
+        // Hover opens it on a mouse; the click handler above covers touch,
+        // where there is no hover to open anything with.
+        templateItem.addEventListener('mouseenter', () => openTemplateMenu(templateItem));
 
         document.body.appendChild(menu);
 
@@ -2168,6 +2206,10 @@
     }
 
     function closeAttachMenu() {
+        // The flyout hangs off a row of this menu, so it goes too --
+        // otherwise dismissing the menu leaves a submenu floating with
+        // nothing behind it.
+        closeTemplateMenu();
         document.getElementById('attachMenu')?.remove();
     }
 
@@ -2237,6 +2279,38 @@
     // ------------------------------------------------------------------
     // Catalog
     // ------------------------------------------------------------------
+
+    /**
+     * Loads the approved templates once and keeps them.
+     *
+     * They are the same list for every conversation and change only when
+     * somebody edits them in 360dialog, so asking on every menu open was
+     * a round trip to Meta's API between the tap and anything appearing
+     * -- the whole reason picking a template felt slow.
+     *
+     * A FAILED load is not cached: state.templates stays null and the
+     * next open tries again. Caching a failure would mean one bad moment
+     * on page load left the menu permanently empty until a reload.
+     */
+    async function loadTemplates() {
+        if (state.templates) return state.templates;
+        if (state.templatesLoading) return state.templatesLoading;
+
+        state.templatesLoading = (async () => {
+            try {
+                const data = await api(API.templates);
+                state.templates = data.templates || [];
+                return state.templates;
+            } catch (err) {
+                state.templatesError = err.message;
+                return null;
+            } finally {
+                state.templatesLoading = null;
+            }
+        })();
+
+        return state.templatesLoading;
+    }
 
     /** Reads what is uploaded, so the attach menu can name it. */
     async function loadCatalog() {
@@ -2419,10 +2493,193 @@
     // never be restarted from the CRM.
     // ------------------------------------------------------------------
 
+    /**
+     * The template flyout: the fast path for sending a follow-up.
+     *
+     * Opens beside whatever anchored it, off a list that is already in
+     * memory, so there is nothing to wait for. Clicking a template with
+     * no placeholders SENDS IT -- the row shows the message text, so
+     * what you read is what goes. One that needs {{n}} values opens the
+     * dialog instead, because there is nowhere in a menu to type them.
+     */
+    function openTemplateMenu(anchor) {
+        if (document.getElementById('templateMenu')) return;
+        if (!state.selectedSessionId) {
+            toast('Select a customer first.', 'error');
+            return;
+        }
+
+        const menu = document.createElement('div');
+        menu.className = 'template-menu';
+        menu.id = 'templateMenu';
+        menu.setAttribute('role', 'menu');
+
+        const templates = state.templates;
+
+        if (templates === null) {
+            const note = document.createElement('p');
+            note.className = 'template-menu__note';
+            note.textContent = state.templatesError
+                ? 'Could not load your templates.'
+                : 'Loading templates…';
+            menu.appendChild(note);
+            // The boot load is still in flight, or it failed. Either way,
+            // try again and redraw rather than leaving a dead menu.
+            loadTemplates().then(() => {
+                if (document.getElementById('templateMenu') === menu) {
+                    closeTemplateMenu();
+                    openTemplateMenu(anchor);
+                }
+            });
+        } else if (templates.length === 0) {
+            const note = document.createElement('p');
+            note.className = 'template-menu__note';
+            note.textContent = 'No templates on this number yet.';
+            menu.appendChild(note);
+        } else {
+            orderedTemplates(templates).forEach((template) => {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'template-menu__item';
+                row.setAttribute('role', 'menuitem');
+                row.disabled = !template.sendable;
+
+                const head = document.createElement('span');
+                head.className = 'template-menu__head';
+
+                const name = document.createElement('span');
+                name.className = 'template-menu__name';
+                name.textContent = template.name;
+                head.appendChild(name);
+
+                const tag = document.createElement('span');
+                tag.className = 'template-menu__lang';
+                tag.textContent = isArabicTemplate(template) ? 'AR' : (template.language || '').toUpperCase();
+                head.appendChild(tag);
+                row.appendChild(head);
+
+                const body = document.createElement('span');
+                body.className = 'template-menu__body';
+                body.textContent = template.sendable ? (template.body || '') : template.reason;
+                row.appendChild(body);
+
+                row.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    closeTemplateMenu();
+                    closeAttachMenu();
+
+                    if (template.placeholders > 0) {
+                        openTemplateDialog(template);
+                    } else {
+                        sendTemplateNow(template);
+                    }
+                });
+
+                menu.appendChild(row);
+            });
+        }
+
+        document.body.appendChild(menu);
+        positionTemplateMenu(menu, anchor);
+
+        // Leaving the flyout closes it, but only if the pointer did not
+        // land back on the row that opened it.
+        menu.addEventListener('mouseleave', closeTemplateMenu);
+
+        setTimeout(() => document.addEventListener('click', onDocumentCloseTemplateMenu), 0);
+    }
+
+    function onDocumentCloseTemplateMenu(e) {
+        const menu = document.getElementById('templateMenu');
+        if (menu && !menu.contains(e.target)) closeTemplateMenu();
+    }
+
+    function closeTemplateMenu() {
+        document.getElementById('templateMenu')?.remove();
+        document.removeEventListener('click', onDocumentCloseTemplateMenu);
+    }
+
+    /**
+     * Beside the anchor where there is room, above it where there is not.
+     *
+     * The attach menu sits at the bottom-left of the screen, and on a
+     * phone there is no room to its right at all -- a flyout that only
+     * knew how to open sideways would open off the edge.
+     */
+    function positionTemplateMenu(menu, anchor) {
+        const a = anchor.getBoundingClientRect();
+        const m = menu.getBoundingClientRect();
+        const gap = 6;
+
+        let left = a.right + gap;
+        let top = a.top;
+
+        if (left + m.width > window.innerWidth - 8) {
+            // No room beside it: sit above the menu it belongs to.
+            left = Math.max(8, Math.min(a.left, window.innerWidth - m.width - 8));
+            top = a.top - m.height - gap;
+        }
+        if (top < 8) top = 8;
+        if (top + m.height > window.innerHeight - 8) {
+            top = Math.max(8, window.innerHeight - m.height - 8);
+        }
+
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+    }
+
+    /** The Arabic ones first for an Arabic-speaking customer. */
+    function orderedTemplates(templates) {
+        const prefersArabic = customerPrefersArabic(state.selectedCustomer);
+        return [...templates].sort((a, b) => {
+            if (a.sendable !== b.sendable) return a.sendable ? -1 : 1;
+            const aAr = isArabicTemplate(a);
+            const bAr = isArabicTemplate(b);
+            if (aAr !== bAr) return (aAr === prefersArabic) ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        });
+    }
+
+    /**
+     * Sends a no-placeholder template straight off the menu.
+     *
+     * Nothing to fill in and nothing to preview that the menu row did not
+     * already show, so a dialog here would be a modal asking "are you
+     * sure?" about a thing the agent just read and chose.
+     */
+    async function sendTemplateNow(template) {
+        const sessionId = state.selectedSessionId;
+
+        try {
+            const data = await api(API.send, {
+                method: 'POST',
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    type: 'template',
+                    template: template.name,
+                    language: template.language,
+                    // Stored so the thread reads as what the customer
+                    // received rather than as the template's name.
+                    body: [template.header, template.body, template.footer]
+                        .filter(Boolean).join('\n\n'),
+                    params: [],
+                }),
+            });
+
+            if (sessionId !== state.selectedSessionId) return;
+
+            appendMessages([data.message]);
+            refreshSidebarPreview(sessionId);
+            toast('Template sent.');
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    }
+
     /** The template the agent tapped in the dialog, or null. */
     let selectedTemplate = null;
 
-    async function openTemplateDialog() {
+    async function openTemplateDialog(preselect = null) {
         if (!state.selectedSessionId) {
             toast('Select a customer first.', 'error');
             return;
@@ -2461,17 +2718,17 @@
 
         const list = document.getElementById('tplList');
 
-        let templates = [];
-        try {
-            const data = await api(API.templates);
-            templates = data.templates || [];
-        } catch (err) {
+        // From the cache the boot load filled. Only a first open that
+        // beat the load, or one that failed, waits on anything here.
+        let templates = state.templates ?? await loadTemplates();
+
+        if (templates === null) {
             list.innerHTML = '';
             const note = document.createElement('p');
             note.className = 'dialog__note';
             note.textContent = 'Could not load your templates.';
             list.appendChild(note);
-            toast(err.message, 'error');
+            toast(state.templatesError || 'Could not load your templates.', 'error');
             return;
         }
 
@@ -2490,16 +2747,7 @@
         // The one the customer can most likely read, first. A guess about
         // ORDER only -- every template stays listed and nothing is ever
         // picked for the agent.
-        const prefersArabic = customerPrefersArabic(state.selectedCustomer);
-        templates = [...templates].sort((a, b) => {
-            if (a.sendable !== b.sendable) return a.sendable ? -1 : 1;
-            const aAr = isArabicTemplate(a);
-            const bAr = isArabicTemplate(b);
-            if (aAr !== bAr) return (aAr === prefersArabic) ? -1 : 1;
-            return a.name.localeCompare(b.name);
-        });
-
-        templates.forEach((template, index) => {
+        orderedTemplates(templates).forEach((template, index) => {
             const option = document.createElement('button');
             option.type = 'button';
             option.className = 'template-option';
@@ -2539,6 +2787,13 @@
             });
 
             list.appendChild(option);
+
+            // Arrived here from the submenu because this one needs values
+            // typed in: open with it already chosen and the inputs drawn.
+            if (preselect && template.name === preselect.name && template.language === preselect.language) {
+                option.click();
+                option.scrollIntoView({ block: 'nearest' });
+            }
         });
     }
 
@@ -2851,7 +3106,12 @@
             action.type = 'button';
             action.className = 'btn btn--primary btn--sm window-notice__action';
             action.textContent = 'Send a template';
-            action.addEventListener('click', openTemplateDialog);
+            // The same flyout the attach menu opens, anchored here
+            // instead: one list, whichever way you reached it.
+            action.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openTemplateMenu(action);
+            });
 
             el.windowNotice.append(
                 strong,
@@ -3438,5 +3698,8 @@
     syncSendButton();
     loadCustomers({ reset: true });
     loadCatalog();
+    // Warmed at boot so the template submenu opens instantly rather than
+    // waiting on Meta the first time somebody reaches for it.
+    loadTemplates();
     startPolling();
 })();

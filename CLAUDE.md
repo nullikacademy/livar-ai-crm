@@ -199,6 +199,16 @@ README** — the template stays placeholders-only.
   its no-third-party-runtime-dependency property. `buildFlag()` in
   `app.js` validates the code before it goes into a URL and falls back to
   the emoji if a file is ever missing.
+- **The template list is cached for the session, a failure is not.**
+  `loadTemplates()` fills `state.templates` once at boot: it is the same
+  list for every conversation and each open was otherwise a round trip to
+  Meta between the click and anything rendering. A failed load leaves it
+  `null` so the next open retries — caching the failure would leave the
+  menu permanently empty until a reload. A template added in 360dialog
+  needs a page reload, which is the accepted cost. Clicking a template
+  with no placeholders in the flyout SENDS it: the row shows the message
+  text, so the read is the confirmation. One with `{{n}}` opens the
+  dialog preselected, because a menu has nowhere to type values.
 - **Sending outside the 24-hour window is templates only.**
   `api/send.php` enforces the window for every type except `template`,
   which is the one thing WhatsApp still delivers. A template row stores
