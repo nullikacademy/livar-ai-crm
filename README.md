@@ -569,6 +569,31 @@ has no job queue to pace one with. Pressing it when nothing is pending
 does nothing and costs nothing. A voice note whose audio Meta has since
 expired is skipped with the reason, not retried.
 
+### Sending a follow-up template
+
+Two ways in, because the reason you need one differs:
+
+- **The window has closed** — the notice in the conversation offers
+  **Send a template**, since that is the only thing WhatsApp will still
+  carry.
+- **The window is open** — 📎 → **Send a template**, for a follow-up you
+  want to send anyway.
+
+The picker lists **the message itself**, not just the template name, so
+templates whose names differ only by an `_ar` suffix are told apart at a
+glance. Tap one, check the preview, send: two taps for a template with no
+variables. One with `{{1}}` placeholders shows an input per value and a
+live preview of the finished message.
+
+For a customer in an Arabic-speaking country the Arabic templates are
+listed first. That is ordering only — every template stays on the list
+and nothing is ever chosen for you.
+
+A template that cannot be sent is still shown, greyed out with the
+reason — *"Not approved yet (pending)"*, or *"Needs a header or button
+value this page cannot fill in"*. "It isn't in the list" is a far worse
+answer than knowing it is still in review.
+
 ### The 24-hour window, and templates
 
 WhatsApp only allows a free-form reply within 24 hours of the customer's

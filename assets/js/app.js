@@ -2149,6 +2149,14 @@
         addItem(questionIconSvg(), 'Ask a question', openQuestionDialog);
         addItem(pinIconSvg(), 'Send location', openLocationDialog);
 
+        // Templates were only reachable from the closed-window notice, so
+        // a follow-up could not be sent to someone whose window happened
+        // to be open -- the one case where the CRM was hiding a thing it
+        // could perfectly well do.
+        addItem(templateIconSvg(), 'Send a template', openTemplateDialog, {
+            note: 'Approved follow-up message',
+        });
+
         document.body.appendChild(menu);
 
         // Anchored above the button, clamped to the viewport.
@@ -2411,11 +2419,16 @@
     // never be restarted from the CRM.
     // ------------------------------------------------------------------
 
+    /** The template the agent tapped in the dialog, or null. */
+    let selectedTemplate = null;
+
     async function openTemplateDialog() {
         if (!state.selectedSessionId) {
             toast('Select a customer first.', 'error');
             return;
         }
+
+        selectedTemplate = null;
 
         const overlay = document.createElement('div');
         overlay.className = 'location-dialog';
@@ -2427,11 +2440,8 @@
                     Approved in advance with Meta, which is why WhatsApp still carries it
                     outside the 24-hour window. Sending one reopens the window.
                 </p>
-                <div class="field">
-                    <label for="tplPick">Template</label>
-                    <select id="tplPick" required>
-                        <option value="">Loading…</option>
-                    </select>
+                <div class="template-list" id="tplList">
+                    <p class="dialog__note">Loading…</p>
                 </div>
                 <div id="tplParams"></div>
                 <div class="template-preview" id="tplPreview" hidden></div>
@@ -2449,18 +2459,18 @@
         document.getElementById('tplCancel').addEventListener('click', closeTemplateDialog);
         document.getElementById('templateForm').addEventListener('submit', submitTemplate);
 
-        const picker = document.getElementById('tplPick');
+        const list = document.getElementById('tplList');
 
         let templates = [];
         try {
             const data = await api(API.templates);
             templates = data.templates || [];
         } catch (err) {
-            picker.innerHTML = '';
-            const option = document.createElement('option');
-            option.value = '';
-            option.textContent = 'Could not load templates';
-            picker.appendChild(option);
+            list.innerHTML = '';
+            const note = document.createElement('p');
+            note.className = 'dialog__note';
+            note.textContent = 'Could not load your templates.';
+            list.appendChild(note);
             toast(err.message, 'error');
             return;
         }
@@ -2468,39 +2478,91 @@
         // The dialog may have been dismissed while the request was out.
         if (!document.getElementById('templateDialog')) return;
 
-        picker.innerHTML = '';
+        list.innerHTML = '';
         if (templates.length === 0) {
-            const option = document.createElement('option');
-            option.value = '';
-            option.textContent = 'This number has no templates yet';
-            picker.appendChild(option);
+            const note = document.createElement('p');
+            note.className = 'dialog__note';
+            note.textContent = 'This number has no templates yet. Create them in 360dialog first.';
+            list.appendChild(note);
             return;
         }
 
-        const placeholder = document.createElement('option');
-        placeholder.value = '';
-        placeholder.textContent = 'Choose a template…';
-        picker.appendChild(placeholder);
+        // The one the customer can most likely read, first. A guess about
+        // ORDER only -- every template stays listed and nothing is ever
+        // picked for the agent.
+        const prefersArabic = customerPrefersArabic(state.selectedCustomer);
+        templates = [...templates].sort((a, b) => {
+            if (a.sendable !== b.sendable) return a.sendable ? -1 : 1;
+            const aAr = isArabicTemplate(a);
+            const bAr = isArabicTemplate(b);
+            if (aAr !== bAr) return (aAr === prefersArabic) ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        });
 
         templates.forEach((template, index) => {
-            const option = document.createElement('option');
-            option.value = String(index);
-            option.dataset.name = template.name;
-            option.dataset.language = template.language;
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'template-option';
+            option.dataset.index = String(index);
+            option.disabled = !template.sendable;
+
+            const head = document.createElement('span');
+            head.className = 'template-option__head';
+
+            const name = document.createElement('span');
+            name.className = 'template-option__name';
+            name.textContent = template.name;
+            head.appendChild(name);
+
+            const tag = document.createElement('span');
+            tag.className = 'template-option__lang';
+            tag.textContent = isArabicTemplate(template) ? 'Arabic' : (template.language || '');
+            head.appendChild(tag);
+            option.appendChild(head);
+
+            // The message itself, not just its name. Four templates whose
+            // names differ by an "_ar" suffix are indistinguishable in a
+            // dropdown; the first line of the actual text is not.
+            const body = document.createElement('span');
+            body.className = 'template-option__body';
             // A template that cannot be sent is still listed, greyed out
             // and saying why: "it isn't in the list" is a far worse
             // answer than "it is still pending approval".
-            option.textContent = template.sendable
-                ? `${template.name} (${template.language})`
-                : `${template.name} — ${template.reason}`;
-            option.disabled = !template.sendable;
-            picker.appendChild(option);
-        });
+            body.textContent = template.sendable ? (template.body || '') : template.reason;
+            option.appendChild(body);
 
-        picker.addEventListener('change', () => {
-            const template = templates[Number(picker.value)];
-            renderTemplateParams(template);
+            option.addEventListener('click', () => {
+                list.querySelectorAll('.template-option').forEach((n) => n.classList.remove('is-selected'));
+                option.classList.add('is-selected');
+                selectedTemplate = template;
+                renderTemplateParams(template);
+            });
+
+            list.appendChild(option);
         });
+    }
+
+    /**
+     * Whether a template is the Arabic one.
+     *
+     * Reads the language Meta reports first. Falls back to an `_ar` name
+     * suffix, because a separate template per language -- rather than two
+     * languages on one -- is a normal way to set them up, and those are
+     * often all registered under the same language code.
+     */
+    function isArabicTemplate(template) {
+        if (String(template.language || '').toLowerCase().startsWith('ar')) return true;
+        return /_ar$/i.test(String(template.name || ''));
+    }
+
+    /** Countries where Arabic is the language a customer most likely reads. */
+    const ARABIC_COUNTRIES = new Set([
+        'AE', 'SA', 'EG', 'QA', 'KW', 'OM', 'BH', 'JO', 'LB', 'SY', 'IQ',
+        'YE', 'LY', 'SD', 'TN', 'DZ', 'MA', 'MR', 'PS', 'SO', 'DJ', 'KM',
+    ]);
+
+    function customerPrefersArabic(customer) {
+        return ARABIC_COUNTRIES.has(String(customer?.country_code || '').toUpperCase());
     }
 
     /** Draws one input per {{n}} the chosen template has, plus a preview. */
@@ -2573,8 +2635,7 @@
     async function submitTemplate(e) {
         e.preventDefault();
 
-        const picker = document.getElementById('tplPick');
-        if (picker.value === '') {
+        if (!selectedTemplate) {
             toast('Choose a template first.', 'error');
             return;
         }
@@ -2586,7 +2647,7 @@
             return;
         }
 
-        const option = picker.options[picker.selectedIndex];
+        const option = selectedTemplate;
         const sessionId = state.selectedSessionId;
         const btn = document.getElementById('tplSend');
 
@@ -2599,8 +2660,8 @@
                 body: JSON.stringify({
                     session_id: sessionId,
                     type: 'template',
-                    template: option.dataset.name,
-                    language: option.dataset.language,
+                    template: option.name,
+                    language: option.language,
                     // Sent so the stored row reads as what the customer
                     // received rather than as "{{1}}".
                     body: preview.textContent,
@@ -2712,6 +2773,10 @@
 
     function questionIconSvg() {
         return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><path d="M12 17h.01"/></svg>';
+    }
+
+    function templateIconSvg() {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M7 8h10M7 12h6"/></svg>';
     }
 
     function paperclipIconSvg() {

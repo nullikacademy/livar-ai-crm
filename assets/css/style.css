@@ -2050,6 +2050,67 @@ img.flag {
 
 .question-options { display: flex; flex-direction: column; gap: 6px; }
 
+/* The template picker: a list showing each message, not a dropdown of
+   names. Four templates whose names differ by an "_ar" suffix are
+   indistinguishable until you can see the text. */
+.template-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 46vh;
+    overflow-y: auto;
+    margin-bottom: 4px;
+}
+.template-option {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    text-align: start;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.template-option:hover:not(:disabled) { border-color: var(--line-strong, var(--ink-3)); }
+.template-option.is-selected {
+    border-color: var(--accent, #E8590C);
+    background: var(--surface-2);
+}
+.template-option:disabled { opacity: 0.55; cursor: default; }
+.template-option__head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+.template-option__name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink);
+}
+.template-option__lang {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+}
+.template-option__body {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--ink-2);
+    /* Two lines is enough to tell them apart; the full text is in the
+       preview underneath once one is chosen. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+
 .template-preview {
     padding: 10px 12px;
     border-radius: var(--r-sm);
