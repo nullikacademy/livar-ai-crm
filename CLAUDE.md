@@ -113,6 +113,30 @@ README** — the template stays placeholders-only.
   frontend on every conversation switch — one customer's pricing note
   must not shape the next customer's reply. A brief that is set stays
   visible on the collapsed row for the same reason.
+- **Automation is a timer, and its judgement lives in SQL.** `cron/run.php`
+  answers ad conversations without a person. It is scheduled rather than
+  triggered by the webhook on purpose: customers send three messages in a
+  row, and replying to the first while they are still typing is the
+  behaviour the whole design exists to avoid. Every condition that decides
+  whether a robot may speak is in `get_auto_reply_candidates()` — ad
+  referral, allowance, quiet period, 24-hour window, and the one that
+  makes it safe: **the newest message in the thread must be inbound**, so
+  a reply from anyone, agent or robot, stands it down. Scope is ad-only
+  and deliberately not a setting. It builds its payload with the same
+  `buildDraftPayload()` the Draft button uses, so an automatic reply
+  reasons from exactly what an agent reviewing it afterwards would see,
+  and stores `wa_source = 'auto'` so the thread says which words nobody
+  wrote. `cron/run.php` is the second endpoint that cannot sit behind
+  `require_auth()`: CLI needs no token, HTTP needs `AUTOMATION_TOKEN`
+  compared with `hash_equals()`, and with no token defined it 404s to
+  everyone — it fails closed, because the alternative is a URL that spends
+  the OpenAI balance of whoever finds it.
+- **`automation_last_run` is readable but not writable.** It is the only
+  honest answer to "is my cron job running?", and a browser that could
+  write it could fake one. Hence `SETTING_AGENT_READABLE` being wider than
+  `SETTING_AGENT_EDITABLE`; both are explicit allowlists, never
+  "everything except", so `catalog_path` cannot leak through a key added
+  later.
 - **The model and system prompt are database settings, not constants.**
   They live in `livar_settings` so the settings page can change them;
   `SETTING_DEFAULTS` in `db_functions.php` holds the fallbacks. API keys

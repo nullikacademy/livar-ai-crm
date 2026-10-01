@@ -120,7 +120,35 @@ const WHATSAPP_MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 const WHATSAPP_WINDOW_HOURS = 24;
 
 // ------------------------------------------------------------------
-// 5. Interface
+// 5. Automation (optional)
+// ------------------------------------------------------------------
+//
+// Lets cron/run.php be triggered over HTTP as well as from the command
+// line. Leave it commented out unless you need it.
+//
+// The normal setup is a cron job running the script directly -- note the
+// schedule contains a slash-star, which is why this is a line comment
+// and not a docblock:
+//
+//     */3 * * * * /usr/local/bin/php /home/USER/public_html/cron/run.php
+//
+// That needs no token: anyone who can run it can already read this file.
+// Set one only if your host cannot run PHP from cron and you have to
+// call a URL instead, from cPanel or a service like cron-job.org:
+//
+//     https://your-domain/cron/run.php?token=THE_VALUE_BELOW
+//
+// Generate it the same way as the webhook token, and treat it the same
+// way -- anyone holding it can spend your OpenAI balance:
+//
+//     php -r "echo bin2hex(random_bytes(24)), PHP_EOL;"
+//
+// With no AUTOMATION_TOKEN defined, that URL answers 404 to everyone.
+
+// const AUTOMATION_TOKEN = 'REPLACE_WITH_A_LONG_RANDOM_STRING';
+
+// ------------------------------------------------------------------
+// 6. Interface
 // ------------------------------------------------------------------
 
 /** How many customers to load per page in the sidebar (infinite scroll). */

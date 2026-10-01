@@ -569,6 +569,73 @@ has no job queue to pace one with. Pressing it when nothing is pending
 does nothing and costs nothing. A voice note whose audio Meta has since
 expired is skipped with the reason, not retried.
 
+### Answering ad leads automatically
+
+**Settings → Automation** turns on replying, without a person, to
+customers who arrived from a **Click-to-WhatsApp ad**. Off until you
+switch it on, and it stays scoped to ad conversations — everything else
+always waits for a human.
+
+It runs on a **timer, not on each incoming message**, and that is the
+point. People send three messages in a row — *"hello"*, *"do you have
+500ml"*, *"what is the price"* — and three separate answers to one
+thought is how a customer learns they are talking to a machine. The
+timer lets the burst finish so **one reply covers all of it**.
+
+A conversation is answered only when every one of these is true:
+
+| | |
+|---|---|
+| It began with a Meta ad | the message carries a referral |
+| The newest message is the customer's | a reply from *anyone* — you or the AI — stands it down |
+| They have stopped writing | for **Wait before replying**, 120s by default |
+| The allowance is not spent | **Automatic replies per conversation**, 2 by default |
+| The 24-hour window is open | an automatic reply is free-form, so Meta would refuse it outside |
+
+Every automatic reply is labelled **Sent automatically** in the thread,
+so you can always see which words were yours and which the robot's.
+
+#### Setting up the schedule
+
+**The CRM cannot run itself.** A cron job on your server has to call it,
+and until you add one nothing is answered no matter what the switch says.
+In cPanel → *Cron Jobs*, every 3 minutes:
+
+```
+*/3 * * * * /usr/local/bin/php /home/USER/public_html/cron/run.php
+```
+
+Replace the PHP path and the project path with yours. Run it once by hand
+first — it prints what it did:
+
+```bash
+php /path/to/cron/run.php
+# -> 1 replied, 0 skipped, 0 waiting
+```
+
+If your host cannot run PHP from cron, set `AUTOMATION_TOKEN` in
+`config/config.php` and have cPanel or a service like cron-job.org fetch
+`https://your-domain/cron/run.php?token=…` instead. **Without that
+constant the URL answers 404 to everyone**, so the command-line setup
+leaves nothing exposed.
+
+**Settings → Automation shows when it last ran.** That line is the only
+honest answer to "is this actually working?" — the switch being on proves
+nothing on its own. It turns red if the last run is older than 15
+minutes, or if there has never been one.
+
+#### What the AI is told
+
+The same conversation an agent would see — the thread, the customer's
+details, the ad they clicked, photo captions, voice transcripts — plus
+one instruction that only automatic replies get: answer only from what is
+already in the conversation, never invent a price or a lead time, say a
+colleague will follow up when the question needs a person, and treat a
+burst of messages as one question.
+
+It is still your **system prompt** that sets the voice. Tighten that
+first if the replies do not sound like you.
+
 ### Sending a follow-up template
 
 Two ways in, because the reason you need one differs:

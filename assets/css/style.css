@@ -2050,6 +2050,60 @@ img.flag {
 
 .question-options { display: flex; flex-direction: column; gap: 6px; }
 
+/* Automation: the switch, and the honest "is cron actually running?" line. */
+.field--switch { margin-bottom: 4px; }
+.switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    user-select: none;
+}
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch__track {
+    position: relative;
+    flex: 0 0 auto;
+    width: 40px;
+    height: 23px;
+    border-radius: var(--r-full);
+    background: var(--line-strong, #C9C9CF);
+    transition: background var(--t-fast) var(--ease);
+}
+.switch__track::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 19px;
+    height: 19px;
+    border-radius: var(--r-full);
+    background: #fff;
+    box-shadow: var(--shadow-1);
+    transition: transform var(--t-fast) var(--ease);
+}
+.switch input:checked + .switch__track { background: var(--accent, #E8590C); }
+.switch input:checked + .switch__track::after { transform: translateX(17px); }
+.switch input:focus-visible + .switch__track { outline: 2px solid var(--accent, #E8590C); outline-offset: 2px; }
+.switch__label { font-size: 14px; font-weight: 500; color: var(--ink); }
+
+.automation-status {
+    margin-top: 16px;
+    padding: 12px 14px;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+}
+.automation-status__line {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink-2);
+}
+.automation-status__line.is-ok { color: var(--ok, #2F9E44); }
+.automation-status__line.is-warn { color: var(--danger, #E03131); }
+
+/* A reply nobody read before the customer did. */
+.bubble__tag--auto { opacity: 0.95; }
+
 /* The template flyout, off the attach menu's "Send a template" row. */
 .attach-menu__item--parent { position: relative; }
 .attach-menu__chevron {

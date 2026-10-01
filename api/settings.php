@@ -53,10 +53,10 @@ function handleGet(): void
 {
     json_response([
         'success'  => true,
-        'settings' => editableOnly(getSettings()),
+        'settings' => readableOnly(getSettings()),
         // Sent so the page can offer "reset to default" without hardcoding
         // a copy of the prompt in JavaScript that would drift from PHP.
-        'defaults' => editableOnly(SETTING_DEFAULTS),
+        'defaults' => readableOnly(SETTING_DEFAULTS),
         'models'   => availableModels(),
     ]);
 }
@@ -83,21 +83,24 @@ function handleSave(): void
 
     // Re-read rather than echo the input back, so the page shows what is
     // actually stored -- including a default restored by saving a blank.
-    json_response(['success' => true, 'saved' => $saved, 'settings' => editableOnly(freshSettings())]);
+    json_response(['success' => true, 'saved' => $saved, 'settings' => readableOnly(freshSettings())]);
 }
 
 /**
- * Narrows a settings map to the keys this endpoint owns.
+ * Narrows a settings map to the keys this endpoint may hand a browser.
  *
  * `catalog_path` is the one that matters: it is a location inside
  * storage/, and there is no reason for it to reach a browser at all.
+ * This is the READ list, which is wider than what may be written --
+ * `automation_last_run` is shown on the page but only cron/run.php sets
+ * it. See SETTING_AGENT_READABLE and SETTING_AGENT_EDITABLE.
  *
  * @param array<string, string> $settings
  * @return array<string, string>
  */
-function editableOnly(array $settings): array
+function readableOnly(array $settings): array
 {
-    return array_intersect_key($settings, array_flip(SETTING_AGENT_EDITABLE));
+    return array_intersect_key($settings, array_flip(SETTING_AGENT_READABLE));
 }
 
 /**

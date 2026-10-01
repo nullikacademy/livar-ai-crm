@@ -454,3 +454,80 @@ $$;
 -- case you also want the anon/authenticated roles to be able to call it.
 grant execute on function public.get_customers_with_preview(text, int, int, text)
     to anon, authenticated, service_role;
+
+-- ============================================================================
+-- get_auto_reply_candidates — which conversations the robot may answer
+--
+--   POST {SUPABASE_URL}/rest/v1/rpc/get_auto_reply_candidates
+-- ============================================================================
+--
+-- Everything that decides whether an automatic reply may go out, in one
+-- place and one round trip. A conversation qualifies only when ALL hold:
+--
+--   * it started from a Meta ad -- some message in it carries a referral;
+--   * the newest message in the thread is INBOUND. This is the rule that
+--     makes the whole thing safe: a reply from anyone, agent or robot,
+--     clears the pending state. Automation can never talk over an agent
+--     who just answered, and can never answer itself twice;
+--   * that newest message has been sitting for p_quiet_seconds. Customers
+--     send three messages in a row; replying to the first while they are
+--     still typing is exactly what this delay exists to prevent, and it
+--     is why the whole run is a timer rather than a webhook reflex;
+--   * fewer than p_max_replies automatic replies have gone out already;
+--   * the 24-hour window is still open, because an automatic reply is
+--     free-form and WhatsApp would refuse it outside the window.
+--
+-- Oldest first, so when the per-run cap bites, the customer who has been
+-- waiting longest is the one who gets answered.
+create or replace function public.get_auto_reply_candidates(
+    p_quiet_seconds int default 120,
+    p_max_replies   int default 2,
+    p_limit         int default 10,
+    p_window_hours  int default 24
+)
+returns table (
+    session_id    text,
+    auto_sent     bigint,
+    waiting_since timestamptz
+)
+language sql
+stable
+as $$
+    with threads as (
+        select
+            c.session_id,
+            exists (
+                select 1 from public.n8n_chat_history r
+                 where r.session_id = c.session_id
+                   and r.wa_referral is not null
+            ) as from_ad,
+            (
+                select count(*) from public.n8n_chat_history a
+                 where a.session_id = c.session_id
+                   and a.wa_source = 'auto'
+            ) as auto_sent,
+            last_row.direction  as last_direction,
+            last_row.created_at as last_at
+        from public.livar_customer c
+        left join lateral (
+            select h.direction, h.created_at
+              from public.n8n_chat_history h
+             where h.session_id = c.session_id
+             order by h.created_at desc, h.id desc
+             limit 1
+        ) last_row on true
+        where c.last_inbound_at is not null
+          and c.last_inbound_at > now() - make_interval(hours => p_window_hours)
+    )
+    select t.session_id, t.auto_sent, t.last_at
+      from threads t
+     where t.from_ad
+       and t.last_direction = 'in'
+       and t.last_at <= now() - make_interval(secs => p_quiet_seconds)
+       and t.auto_sent < p_max_replies
+     order by t.last_at asc
+     limit p_limit;
+$$;
+
+grant execute on function public.get_auto_reply_candidates(int, int, int, int)
+    to anon, authenticated, service_role;

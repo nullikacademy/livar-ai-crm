@@ -1431,11 +1431,18 @@
      * would be noise on every outbound message in every thread.
      */
     function appendSourceTag(bubble, msg) {
-        if (msg.wa_source !== 'app') return;
+        // 'auto' is the one that matters most: a reply nobody read before
+        // the customer did. An agent scrolling back has to be able to see
+        // at a glance which words were theirs and which the robot's.
+        const label = {
+            app: 'Sent from the WhatsApp app',
+            auto: 'Sent automatically',
+        }[msg.wa_source];
+        if (!label) return;
 
         const tag = document.createElement('div');
-        tag.className = 'bubble__tag';
-        tag.textContent = 'Sent from the WhatsApp app';
+        tag.className = 'bubble__tag' + (msg.wa_source === 'auto' ? ' bubble__tag--auto' : '');
+        tag.textContent = label;
         // Above the text, like the template tag, so it reads as a label
         // on the message rather than a footnote after it.
         bubble.prepend(tag);

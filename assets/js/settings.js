@@ -25,6 +25,12 @@
         toastStack: document.getElementById('toastStack'),
         // AI settings form
         aiForm: document.getElementById('aiForm'),
+        autoForm: document.getElementById('autoForm'),
+        autoEnabled: document.getElementById('autoEnabled'),
+        autoMax: document.getElementById('autoMax'),
+        autoQuiet: document.getElementById('autoQuiet'),
+        autoSaveBtn: document.getElementById('autoSaveBtn'),
+        automationLastRun: document.getElementById('automationLastRun'),
         aiModel: document.getElementById('aiModel'),
         aiModelList: document.getElementById('aiModelList'),
         aiModelHelp: document.getElementById('aiModelHelp'),
@@ -256,6 +262,8 @@
             el.aiTranscribeModel.value = data.settings.ai_transcribe_model || '';
             el.aiPrompt.value = data.settings.ai_system_prompt || '';
 
+            paintAutomation(data.settings);
+
             // Autocomplete from the account's real model list. Free text
             // still works, so an empty list only costs the suggestions.
             el.aiModelList.textContent = '';
@@ -304,6 +312,85 @@
         } finally {
             el.aiSaveBtn.disabled = false;
             el.aiSaveBtn.textContent = 'Save';
+        }
+    });
+
+    // ------------------------------------------------------------------
+    // Automation
+    // ------------------------------------------------------------------
+
+    function paintAutomation(settings) {
+        el.autoEnabled.checked = settings.auto_reply_enabled === '1';
+        el.autoMax.value = settings.auto_reply_max || '2';
+        el.autoQuiet.value = settings.auto_reply_quiet_seconds || '120';
+        paintLastRun(settings.automation_last_run, settings.automation_last_result);
+    }
+
+    /**
+     * Whether the schedule is actually running.
+     *
+     * The single most useful thing this page can say. Switching
+     * automation on does nothing at all unless a cron job is calling
+     * cron/run.php, and those are two completely separate places to get
+     * wrong -- so "on" is never reported as working on its own.
+     */
+    function paintLastRun(lastRun, lastResult) {
+        const box = el.automationLastRun;
+        box.classList.remove('is-ok', 'is-warn');
+
+        if (!lastRun) {
+            box.classList.add('is-warn');
+            box.textContent = 'Never run. The cron job is not set up yet, so nothing will be answered.';
+            return;
+        }
+
+        const when = new Date(lastRun);
+        if (Number.isNaN(when.getTime())) {
+            box.textContent = `Last run: ${lastRun}`;
+            return;
+        }
+
+        const minutes = Math.floor((Date.now() - when.getTime()) / 60000);
+        const ago = minutes < 1 ? 'less than a minute ago'
+            : minutes === 1 ? '1 minute ago'
+            : minutes < 90 ? `${minutes} minutes ago`
+            : `${Math.round(minutes / 60)} hours ago`;
+
+        // A schedule that should tick every 3 minutes and last ran 20
+        // minutes ago is broken, whatever the switch says.
+        box.classList.add(minutes > 15 ? 'is-warn' : 'is-ok');
+        box.textContent = `Last run ${ago}${lastResult ? ` — ${lastResult}` : ''}.`;
+    }
+
+    el.autoForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        el.autoSaveBtn.disabled = true;
+        el.autoSaveBtn.textContent = 'Saving…';
+
+        try {
+            const data = await api(API_SETTINGS, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    auto_reply_enabled: el.autoEnabled.checked ? '1' : '0',
+                    auto_reply_max: String(Math.max(0, parseInt(el.autoMax.value, 10) || 0)),
+                    auto_reply_quiet_seconds: String(Math.max(0, parseInt(el.autoQuiet.value, 10) || 0)),
+                }),
+            });
+
+            if (data) {
+                // Repainted from what was stored, so a value the server
+                // clamped or rejected is visible rather than assumed.
+                paintAutomation(data.settings);
+                toast(el.autoEnabled.checked
+                    ? 'Automation saved and switched on.'
+                    : 'Automation saved and switched off.');
+            }
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            el.autoSaveBtn.disabled = false;
+            el.autoSaveBtn.textContent = 'Save';
         }
     });
 

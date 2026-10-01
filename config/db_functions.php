@@ -1328,6 +1328,36 @@ PROMPT,
     'catalog_path' => '',
     'catalog_name' => '',
     'catalog_mime' => '',
+
+    // --- Automation ---------------------------------------------------
+    //
+    // Answering customers without a person. Off unless somebody turns it
+    // on: an upgrade must never start messaging customers by itself.
+    //
+    // Scope is deliberately narrow and NOT configurable here -- only
+    // conversations that began with a Click-to-WhatsApp ad. Those are the
+    // ones where the first question is predictable and the cost of a slow
+    // answer is highest. Widening it to every customer is a decision to
+    // take on purpose, not a checkbox to find.
+    'auto_reply_enabled' => '0',
+
+    // Automatic replies per conversation, for its whole life. Once spent,
+    // the thread waits for a person -- which is what stops a robot and a
+    // confused customer talking to each other all night.
+    'auto_reply_max' => '2',
+
+    // How long the customer must have been quiet before answering. The
+    // point of the whole scheduled design: people send three messages in
+    // a row, and three separate replies to one thought reads like a
+    // machine. Waiting lets the burst finish so one reply covers it.
+    'auto_reply_quiet_seconds' => '120',
+
+    // Stamped by cron/run.php on every run. Written by the runner, never
+    // by the settings form -- it is a record of something that happened,
+    // and it is the one honest answer to "is my cron job actually
+    // working?", which is the question the settings page has to answer.
+    'automation_last_run'    => '',
+    'automation_last_result' => '',
 ];
 
 /**
@@ -1341,7 +1371,32 @@ PROMPT,
  * catalog is uploaded through api/catalog.php instead, which stores the
  * bytes and derives the path itself.
  */
-const SETTING_AGENT_EDITABLE = ['ai_model', 'ai_system_prompt', 'ai_transcribe_model'];
+const SETTING_AGENT_EDITABLE = [
+    'ai_model', 'ai_system_prompt', 'ai_transcribe_model',
+    // The automation controls. `automation_last_run` is NOT here: it is
+    // written by the runner as a record of a thing that happened, and a
+    // browser that could set it would be able to fake a working cron job.
+    'auto_reply_enabled', 'auto_reply_max', 'auto_reply_quiet_seconds',
+];
+
+/**
+ * What the settings page may READ, which is a little more than it may
+ * write.
+ *
+ * `automation_last_run` is the honest answer to "is my cron job actually
+ * working?", so the page has to be able to show it -- but a browser that
+ * could WRITE it could fake a working schedule, which is the one thing
+ * this value exists to disprove. Hence two lists.
+ *
+ * An explicit allowlist rather than "everything except the secrets":
+ * `catalog_path` is a location inside storage/, and a reader built by
+ * subtraction grows a hole the first time somebody adds a key.
+ */
+const SETTING_AGENT_READABLE = [
+    'ai_model', 'ai_system_prompt', 'ai_transcribe_model',
+    'auto_reply_enabled', 'auto_reply_max', 'auto_reply_quiet_seconds',
+    'automation_last_run', 'automation_last_result',
+];
 
 /**
  * Reads every editable setting, with defaults filled in.
@@ -1376,6 +1431,33 @@ function getSettings(): array
     }
 
     return $cache = $values;
+}
+
+/**
+ * Conversations an automatic reply should answer right now.
+ *
+ * All the judgement lives in the get_auto_reply_candidates() Postgres
+ * function (see sql/schema.sql) rather than here: it has to look at the
+ * newest row of every thread, count the automatic replies already sent
+ * and check for an ad referral, and doing that over REST would be a
+ * request per conversation on a timer.
+ *
+ * @return array<int, array{session_id: string, auto_sent: int, waiting_since: ?string}>
+ */
+function getAutoReplyCandidates(int $quietSeconds, int $maxReplies, int $limit): array
+{
+    $rows = Supabase::client()->rpc('get_auto_reply_candidates', [
+        'p_quiet_seconds' => max(0, $quietSeconds),
+        'p_max_replies'   => max(0, $maxReplies),
+        'p_limit'         => max(1, $limit),
+        'p_window_hours'  => defined('WHATSAPP_WINDOW_HOURS') ? (int) WHATSAPP_WINDOW_HOURS : 24,
+    ]);
+
+    return array_map(static fn(array $row): array => [
+        'session_id'    => (string) ($row['session_id'] ?? ''),
+        'auto_sent'     => (int) ($row['auto_sent'] ?? 0),
+        'waiting_since' => $row['waiting_since'] ?? null,
+    ], $rows);
 }
 
 /**

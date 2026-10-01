@@ -136,6 +136,63 @@ function asset(string $relativePath): string
         </section>
 
         <section class="settings__section">
+            <h2>Automation</h2>
+            <p class="settings__note">
+                Answering customers who arrived from a <strong>Meta ad</strong>, without
+                a person. Nobody reads these before the customer does, so start small
+                and read what it actually sent.
+            </p>
+
+            <form class="ai-form" id="autoForm">
+                <div class="field field--switch">
+                    <label class="switch">
+                        <input type="checkbox" id="autoEnabled" />
+                        <span class="switch__track" aria-hidden="true"></span>
+                        <span class="switch__label">Reply automatically to ad conversations</span>
+                    </label>
+                    <p class="field__help">
+                        Only conversations that began with a Click-to-WhatsApp ad.
+                        Everything else always waits for a person.
+                    </p>
+                </div>
+
+                <div class="field">
+                    <label for="autoMax">Automatic replies per conversation</label>
+                    <input type="number" id="autoMax" min="0" max="10" step="1" />
+                    <p class="field__help">
+                        Counted for the life of the conversation, not per day. Once spent,
+                        that thread waits for a person — which is what stops a robot and a
+                        confused customer talking all night. <strong>2</strong> is a good
+                        start.
+                    </p>
+                </div>
+
+                <div class="field">
+                    <label for="autoQuiet">Wait before replying (seconds)</label>
+                    <input type="number" id="autoQuiet" min="0" max="3600" step="10" />
+                    <p class="field__help">
+                        People send three messages in a row. This is how long they must
+                        have stopped writing before the AI answers, so one reply covers
+                        the whole burst instead of three replies chasing each other.
+                    </p>
+                </div>
+
+                <div class="ai-form__actions">
+                    <button type="submit" class="btn btn--primary" id="autoSaveBtn">Save</button>
+                </div>
+            </form>
+
+            <div class="automation-status" id="automationStatus">
+                <div class="automation-status__line" id="automationLastRun">Checking…</div>
+                <p class="field__help">
+                    The CRM cannot run itself on a schedule — a cron job on your server
+                    has to call it. If this never updates, the schedule is not wired up
+                    and nothing will be answered. Setup is in the README.
+                </p>
+            </div>
+        </section>
+
+        <section class="settings__section">
             <h2>Connection health</h2>
             <p class="settings__note">Checked live, each one independently.</p>
         </section>
