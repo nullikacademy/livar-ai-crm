@@ -154,6 +154,7 @@ function asset(string $relativePath): string
                         Only conversations that began with a Click-to-WhatsApp ad.
                         Everything else always waits for a person.
                     </p>
+                    <p class="field__help" id="automationScope"></p>
                 </div>
 
                 <div class="field">

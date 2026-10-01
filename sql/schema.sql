@@ -473,17 +473,31 @@ grant execute on function public.get_customers_with_preview(text, int, int, text
 --     send three messages in a row; replying to the first while they are
 --     still typing is exactly what this delay exists to prevent, and it
 --     is why the whole run is a timer rather than a webhook reflex;
---   * fewer than p_max_replies automatic replies have gone out already;
+--   * fewer than p_max_replies automatic replies have gone out already.
+--     Only wa_source='auto' counts -- a catalog the robot attached is
+--     'auto_doc', because an attachment is part of a reply, not another
+--     one, and spending the allowance on a PDF would cut the
+--     conversation short;
 --   * the 24-hour window is still open, because an automatic reply is
---     free-form and WhatsApp would refuse it outside the window.
+--     free-form and WhatsApp would refuse it outside the window;
+--   * the conversation STARTED after p_since. Switching automation on
+--     stamps that moment, so turning it on answers the chats that arrive
+--     from then on rather than every ad lead already sitting in the
+--     24-hour window -- which is the difference between a test and a
+--     surprise for people who have been waiting since yesterday.
 --
 -- Oldest first, so when the per-run cap bites, the customer who has been
 -- waiting longest is the one who gets answered.
+-- The signature gained p_since, so the old one has to go explicitly.
+drop function if exists public.get_auto_reply_candidates(int, int, int, int);
+drop function if exists public.get_auto_reply_candidates(int, int, int, int, timestamptz);
+
 create or replace function public.get_auto_reply_candidates(
     p_quiet_seconds int default 120,
     p_max_replies   int default 2,
     p_limit         int default 10,
-    p_window_hours  int default 24
+    p_window_hours  int default 24,
+    p_since         timestamptz default '-infinity'
 )
 returns table (
     session_id    text,
@@ -518,6 +532,9 @@ as $$
         ) last_row on true
         where c.last_inbound_at is not null
           and c.last_inbound_at > now() - make_interval(hours => p_window_hours)
+          -- "New chats only": the customer row is created on first
+          -- contact, so this is when the conversation began.
+          and c.created_at > p_since
     )
     select t.session_id, t.auto_sent, t.last_at
       from threads t
@@ -529,5 +546,5 @@ as $$
      limit p_limit;
 $$;
 
-grant execute on function public.get_auto_reply_candidates(int, int, int, int)
+grant execute on function public.get_auto_reply_candidates(int, int, int, int, timestamptz)
     to anon, authenticated, service_role;

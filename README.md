@@ -587,13 +587,37 @@ A conversation is answered only when every one of these is true:
 | | |
 |---|---|
 | It began with a Meta ad | the message carries a referral |
+| The conversation started after you switched automation on | see below |
 | The newest message is the customer's | a reply from *anyone* — you or the AI — stands it down |
 | They have stopped writing | for **Wait before replying**, 120s by default |
 | The allowance is not spent | **Automatic replies per conversation**, 2 by default |
 | The 24-hour window is open | an automatic reply is free-form, so Meta would refuse it outside |
 
+**Switching it on draws a line under everything before it.** Only
+conversations that *start* after that moment are answered — ad leads
+already sitting in the 24-hour window are left for a person. Without
+that, turning it on would fire replies at people who have been waiting
+since yesterday. Switch it off and on again and the line moves to the new
+moment; the settings page says which date is in force.
+
 Every automatic reply is labelled **Sent automatically** in the thread,
 so you can always see which words were yours and which the robot's.
+
+#### The catalogue
+
+If a reply tells the customer the catalogue is coming, the file is
+actually sent, right after the text. The AI asks for it with a marker it
+writes itself — not by this code searching for the word "catalog", which
+would also match *"we don't have a catalogue yet"*. The marker is
+stripped before anything is sent, so a customer never sees it.
+
+**The catalogue does not spend one of the two replies.** It is stored as
+`auto_doc` rather than `auto`: an attachment is part of a reply, not
+another one, and letting a PDF use up the allowance would cut the
+conversation short exactly when it was going well. It is sent at most
+once per conversation, and if no catalogue is uploaded the text still
+goes out — the gap is logged for a person rather than shown to the
+customer.
 
 #### Setting up the schedule
 

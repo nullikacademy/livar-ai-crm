@@ -1437,11 +1437,13 @@
         const label = {
             app: 'Sent from the WhatsApp app',
             auto: 'Sent automatically',
+            auto_doc: 'Attached automatically',
         }[msg.wa_source];
         if (!label) return;
 
         const tag = document.createElement('div');
-        tag.className = 'bubble__tag' + (msg.wa_source === 'auto' ? ' bubble__tag--auto' : '');
+        tag.className = 'bubble__tag'
+            + (msg.wa_source === 'auto' || msg.wa_source === 'auto_doc' ? ' bubble__tag--auto' : '');
         tag.textContent = label;
         // Above the text, like the template tag, so it reads as a label
         // on the message rather than a footnote after it.

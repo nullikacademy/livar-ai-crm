@@ -1352,6 +1352,18 @@ PROMPT,
     // machine. Waiting lets the burst finish so one reply covers it.
     'auto_reply_quiet_seconds' => '120',
 
+    // Only conversations that STARTED after this moment are answered.
+    // Stamped automatically the first time automation is switched on, so
+    // turning it on picks up the chats that arrive from then on rather
+    // than every ad lead already sitting in the 24-hour window. That is
+    // the difference between a test and a surprise for people who have
+    // been waiting since yesterday.
+    //
+    // Empty means "no cutoff", which is what an installation that has
+    // never touched the switch should mean. Cleared by hand in the
+    // database if you ever want automation to take on the backlog.
+    'auto_reply_since' => '',
+
     // Stamped by cron/run.php on every run. Written by the runner, never
     // by the settings form -- it is a record of something that happened,
     // and it is the one honest answer to "is my cron job actually
@@ -1395,6 +1407,10 @@ const SETTING_AGENT_EDITABLE = [
 const SETTING_AGENT_READABLE = [
     'ai_model', 'ai_system_prompt', 'ai_transcribe_model',
     'auto_reply_enabled', 'auto_reply_max', 'auto_reply_quiet_seconds',
+    // Read so the page can say which conversations are in scope. NOT
+    // writable: it is set on the off->on edge by api/settings.php, and a
+    // browser that could move it could point automation at the backlog.
+    'auto_reply_since',
     'automation_last_run', 'automation_last_result',
 ];
 
@@ -1444,13 +1460,17 @@ function getSettings(): array
  *
  * @return array<int, array{session_id: string, auto_sent: int, waiting_since: ?string}>
  */
-function getAutoReplyCandidates(int $quietSeconds, int $maxReplies, int $limit): array
+function getAutoReplyCandidates(int $quietSeconds, int $maxReplies, int $limit, string $since = ''): array
 {
     $rows = Supabase::client()->rpc('get_auto_reply_candidates', [
         'p_quiet_seconds' => max(0, $quietSeconds),
         'p_max_replies'   => max(0, $maxReplies),
         'p_limit'         => max(1, $limit),
         'p_window_hours'  => defined('WHATSAPP_WINDOW_HOURS') ? (int) WHATSAPP_WINDOW_HOURS : 24,
+        // '-infinity' rather than null: a null would make every
+        // comparison null and the filter would quietly match nothing,
+        // which looks exactly like "automation is broken".
+        'p_since'         => $since !== '' ? $since : '-infinity',
     ]);
 
     return array_map(static fn(array $row): array => [
@@ -1458,6 +1478,26 @@ function getAutoReplyCandidates(int $quietSeconds, int $maxReplies, int $limit):
         'auto_sent'     => (int) ($row['auto_sent'] ?? 0),
         'waiting_since' => $row['waiting_since'] ?? null,
     ], $rows);
+}
+
+/**
+ * Has the robot already attached the catalogue in this conversation?
+ *
+ * Guards against a model that says "sending the catalogue" in both of
+ * its replies. Keyed on `wa_source` rather than on the file, because an
+ * agent sending it by hand is a different thing and should not stop the
+ * automatic one from going out if it is genuinely the right answer.
+ */
+function conversation_has_auto_catalog(string $sessionId): bool
+{
+    $result = Supabase::client()->get('n8n_chat_history', [
+        'session_id' => 'eq.' . $sessionId,
+        'wa_source'  => 'eq.auto_doc',
+        'select'     => 'id',
+        'limit'      => '1',
+    ]);
+
+    return $result['rows'] !== [];
 }
 
 /**

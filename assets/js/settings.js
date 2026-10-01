@@ -30,6 +30,7 @@
         autoMax: document.getElementById('autoMax'),
         autoQuiet: document.getElementById('autoQuiet'),
         autoSaveBtn: document.getElementById('autoSaveBtn'),
+        automationScope: document.getElementById('automationScope'),
         automationLastRun: document.getElementById('automationLastRun'),
         aiModel: document.getElementById('aiModel'),
         aiModelList: document.getElementById('aiModelList'),
@@ -323,7 +324,32 @@
         el.autoEnabled.checked = settings.auto_reply_enabled === '1';
         el.autoMax.value = settings.auto_reply_max || '2';
         el.autoQuiet.value = settings.auto_reply_quiet_seconds || '120';
+        paintScope(settings.auto_reply_since, settings.auto_reply_enabled === '1');
         paintLastRun(settings.automation_last_run, settings.automation_last_result);
+    }
+
+    /**
+     * Which conversations are in scope.
+     *
+     * Switching automation on draws a line under everything before it, so
+     * it answers chats that start from then on rather than every ad lead
+     * already waiting. Said out loud, because "why did it not reply to
+     * that one?" is otherwise an unanswerable question.
+     */
+    function paintScope(since, enabled) {
+        const box = el.automationScope;
+        if (!enabled) {
+            box.textContent = 'Switching this on will answer only conversations that start after that moment — never the ones already waiting.';
+            return;
+        }
+        if (!since) {
+            box.textContent = 'Answering every ad conversation in the 24-hour window, including ones that started before this was switched on.';
+            return;
+        }
+        const when = new Date(since);
+        box.textContent = Number.isNaN(when.getTime())
+            ? `Answering conversations that started after ${since}.`
+            : `Answering only conversations that started after ${when.toLocaleString()} — when this was switched on.`;
     }
 
     /**

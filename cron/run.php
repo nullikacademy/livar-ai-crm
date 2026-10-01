@@ -33,6 +33,9 @@ declare(strict_types=1);
 require_once __DIR__ . '/../config/db_functions.php';
 require_once __DIR__ . '/../config/drafting.php';
 require_once __DIR__ . '/../config/whatsapp.php';
+// For media_msg_type_for_mime() when attaching the catalogue. Already
+// pulled in by drafting.php, named here because this file uses it.
+require_once __DIR__ . '/../config/media.php';
 
 /**
  * Most conversations one tick will answer.
@@ -42,6 +45,17 @@ require_once __DIR__ . '/../config/whatsapp.php';
  * up by the next tick three minutes later.
  */
 const AUTOMATION_BATCH = 10;
+
+/**
+ * How the model says "and I am attaching the catalogue".
+ *
+ * A marker it writes on its own line, rather than this code reading the
+ * reply and guessing: "I'll send you the catalog" and "we don't have a
+ * catalog yet" both contain the word, and a keyword match would attach a
+ * PDF to the second one. The marker is stripped before anything is sent,
+ * so the customer never sees it.
+ */
+const CATALOG_MARKER = '[SEND_CATALOG]';
 
 /**
  * The one instruction an automatic reply gets that a drafted one does not.
@@ -64,6 +78,10 @@ reading it first. So:
 - Keep it to a few lines, and end in a way that invites them to reply.
 - Answer everything they just asked in ONE message. They may have sent
   several in a row; treat them as one question.
+- If your reply tells the customer you are sending the catalogue, put
+  [SEND_CATALOG] on a line of its own at the very end. The file is then
+  attached for real. Never promise it without the marker, and never use
+  the marker if you have not said you are sending it.
 BRIEF;
 
 guard_entry();
@@ -142,7 +160,7 @@ function run_automation(): string
     }
 
     try {
-        $candidates = getAutoReplyCandidates($quiet, $max, AUTOMATION_BATCH);
+        $candidates = getAutoReplyCandidates($quiet, $max, AUTOMATION_BATCH, $settings['auto_reply_since'] ?? '');
     } catch (Throwable $e) {
         error_log('[Automation] could not list candidates: ' . $e->getMessage());
         record_run($startedAt, 'failed: could not reach the database');
@@ -224,6 +242,15 @@ function answer_conversation(string $sessionId, array $settings): bool
     }
 
     $reply = trim(WhatsApp::fromMarkdown(AI::client()->chat($payload, $settings['ai_model'])));
+
+    // The model's request to attach the catalogue, taken off the text
+    // before anything is sent. Stripped even when the catalogue cannot
+    // actually be sent, so a marker never reaches a customer.
+    $wantsCatalog = str_contains($reply, CATALOG_MARKER);
+    if ($wantsCatalog) {
+        $reply = trim(str_replace(CATALOG_MARKER, '', $reply));
+    }
+
     if ($reply === '') {
         error_log('[Automation] ' . $sessionId . ': the model returned nothing');
         return false;
@@ -248,7 +275,65 @@ function answer_conversation(string $sessionId, array $settings): bool
         error_log('[Automation] ' . $sessionId . ': replied but could not store the row');
     }
 
+    if ($wantsCatalog) {
+        send_catalog_after($sessionId, $to);
+    }
+
     return true;
+}
+
+/**
+ * Attaches the catalogue to the reply that just promised it.
+ *
+ * Stored as 'auto_doc', NOT 'auto', so it does not spend one of the
+ * conversation's automatic replies: the file is part of a reply, not
+ * another one, and letting a PDF use up the allowance would cut the
+ * conversation short exactly when it was going well.
+ *
+ * Never fatal. The customer has already been told the catalogue is
+ * coming; failing to attach it is worth a loud log and a human picking
+ * it up, not an exception that rolls back a message already delivered.
+ */
+function send_catalog_after(string $sessionId, string $to): void
+{
+    try {
+        $catalog = getCatalogFile();
+        if ($catalog === null) {
+            error_log('[Automation] ' . $sessionId . ': the reply promised a catalogue, but none is uploaded');
+            return;
+        }
+
+        // Once per conversation. A model that says "sending the
+        // catalogue" in both of its replies should not send it twice.
+        if (conversation_has_auto_catalog($sessionId)) {
+            return;
+        }
+
+        $sendType = media_msg_type_for_mime($catalog['mime']);
+        $mediaId  = WhatsApp::client()->uploadMedia($catalog['abs'], $catalog['mime']);
+        $response = WhatsApp::client()->sendMedia(
+            $to,
+            $sendType,
+            $mediaId,
+            '',
+            $sendType === 'document' ? $catalog['name'] : ''
+        );
+
+        insertWhatsAppMessage($sessionId, [
+            'direction'     => 'out',
+            'wa_status'     => 'sent',
+            'wa_source'     => 'auto_doc',
+            'msg_type'      => $sendType,
+            'content'       => '',
+            'media_path'    => $catalog['path'],
+            'media_mime'    => $catalog['mime'],
+            'media_size'    => $catalog['size'],
+            'media_name'    => $catalog['name'],
+            'wa_message_id' => WhatsApp::messageIdFrom($response),
+        ]);
+    } catch (Throwable $e) {
+        error_log('[Automation] ' . $sessionId . ': could not attach the catalogue: ' . $e->getMessage());
+    }
 }
 
 

@@ -131,6 +131,20 @@ README** — the template stays placeholders-only.
   compared with `hash_equals()`, and with no token defined it 404s to
   everyone — it fails closed, because the alternative is a URL that spends
   the OpenAI balance of whoever finds it.
+- **Switching automation on draws a line: `auto_reply_since`.** Stamped
+  server-side on the OFF→ON edge by `api/settings.php`, never by the
+  browser — a client clock could put the line in the past and fire
+  replies at everyone already waiting in the 24-hour window. The RPC
+  filters on `livar_customer.created_at`, so it means "conversations that
+  STARTED after this", not "messages after this". Readable, not writable.
+- **A catalogue the robot attaches is `auto_doc`, not `auto`.** The
+  allowance counts replies, and an attachment is part of a reply rather
+  than another one — counting it would cut a working conversation short.
+  The model asks for it with `CATALOG_MARKER` on its own line, which
+  `cron/run.php` strips before sending; never match on the word
+  "catalog", because "we don't have a catalogue yet" contains it too.
+  Sent at most once per conversation, and a missing catalogue is logged,
+  never surfaced to the customer.
 - **`automation_last_run` is readable but not writable.** It is the only
   honest answer to "is my cron job running?", and a browser that could
   write it could fake one. Hence `SETTING_AGENT_READABLE` being wider than

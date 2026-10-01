@@ -66,6 +66,10 @@ function handleSave(): void
     $data  = read_json_body();
     $saved = [];
 
+    // Read before anything is written, so "was it off a moment ago?" is
+    // still answerable below.
+    $wasEnabled = getSetting('auto_reply_enabled') === '1';
+
     foreach (SETTING_AGENT_EDITABLE as $key) {
         if (!array_key_exists($key, $data)) {
             continue;
@@ -79,6 +83,20 @@ function handleSave(): void
 
     if (!$saved) {
         json_error('Nothing to save.', 422);
+    }
+
+    // Switching automation ON draws a line under everything that came
+    // before it. Without this, turning it on would answer every ad lead
+    // already sitting inside the 24-hour window -- people who have been
+    // waiting since yesterday, getting a robot reply out of nowhere.
+    // Stamped here rather than in the browser: a clock the client set
+    // could put the line in the past and let exactly that happen.
+    //
+    // Only on the OFF -> ON edge, so switching off and on again does not
+    // move the line, and saving the other fields never touches it.
+    if (!$wasEnabled && ($data['auto_reply_enabled'] ?? '') === '1') {
+        setSetting('auto_reply_since', gmdate('c'));
+        $saved[] = 'auto_reply_since';
     }
 
     // Re-read rather than echo the input back, so the page shows what is
