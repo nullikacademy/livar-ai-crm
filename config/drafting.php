@@ -44,13 +44,30 @@ const GUIDANCE_LIMIT = 600;
  * The system prompt, what the CRM knows about the customer, the thread
  * itself, and -- when an agent typed one -- their brief for this reply.
  *
+ * $guidance and $instruction are both "last word" text and they are NOT
+ * interchangeable. $guidance is typed into a text box by an agent: it is
+ * untrusted, so it is capped at GUIDANCE_LIMIT and wrapped by
+ * guidanceContext(), which labels it and forbids the model from
+ * repeating any of it. $instruction is written by this application --
+ * cron/run.php's AUTOMATION_BRIEF -- and goes in whole and unwrapped,
+ * because both of those protections are actively wrong for it: the cap
+ * silently truncates a brief longer than an agent's note, and "never
+ * repeat this" forbids exactly the marker the brief asks for. Routing
+ * app-authored rules through $guidance costs the end of the brief and
+ * then gags what is left of it.
+ *
  * @param array<string, mixed> $customer
  * @param array<int, array<string, mixed>> $messages
  * @param array<string, string> $settings
  * @return array<int, array<string, mixed>> empty when there is nothing to reply to
  */
-function buildDraftPayload(array $customer, array $messages, array $settings, string $guidance = ''): array
-{
+function buildDraftPayload(
+    array $customer,
+    array $messages,
+    array $settings,
+    string $guidance = '',
+    string $instruction = ''
+): array {
     $turns = buildTurns($messages);
     if (!$turns) {
         return [];
@@ -64,6 +81,12 @@ function buildDraftPayload(array $customer, array $messages, array $settings, st
 
     if ($guidance !== '') {
         $payload[] = ['role' => 'system', 'content' => guidanceContext($guidance)];
+    }
+
+    // After the agent's note, so an app rule the agent cannot see is not
+    // something their wording can talk the model out of.
+    if ($instruction !== '') {
+        $payload[] = ['role' => 'system', 'content' => $instruction];
     }
 
     return $payload;

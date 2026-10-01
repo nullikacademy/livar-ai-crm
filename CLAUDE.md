@@ -144,7 +144,23 @@ README** — the template stays placeholders-only.
   `cron/run.php` strips before sending; never match on the word
   "catalog", because "we don't have a catalogue yet" contains it too.
   Sent at most once per conversation, and a missing catalogue is logged,
-  never surfaced to the customer.
+  never surfaced to the customer. The marker is read off the model's raw
+  answer, before `WhatsApp::fromMarkdown()`, because `[SEND_CATALOG]` is
+  bracketed text and so is the start of a Markdown link.
+- **An app-authored brief does not go in the `guidance` slot.**
+  `buildDraftPayload()` takes both, and they are not interchangeable:
+  `$guidance` is an agent's typing, so it is capped at `GUIDANCE_LIMIT`
+  and wrapped by `guidanceContext()`, which forbids the model from
+  repeating any of it. `$instruction` is ours — `AUTOMATION_BRIEF` — and
+  goes in whole and unwrapped, after the agent's note. Both protections
+  are wrong for our own text, and putting `AUTOMATION_BRIEF` in
+  `$guidance` proved it twice over: at 906 characters the cap cut the
+  brief off mid-sentence and took the `CATALOG_MARKER` rule with it, and
+  "never quote it" forbade the one verbatim token the marker needs. The
+  robot promised customers a catalogue and sent nothing, and the only
+  trace was a reply that read fine. A stand-in model that emits the
+  marker whether or not it was asked for cannot catch this — it must
+  obey only the instructions actually in the payload.
 - **`automation_last_run` is readable but not writable.** It is the only
   honest answer to "is my cron job running?", and a browser that could
   write it could fake one. Hence `SETTING_AGENT_READABLE` being wider than

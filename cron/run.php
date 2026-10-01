@@ -60,10 +60,19 @@ const CATALOG_MARKER = '[SEND_CATALOG]';
 /**
  * The one instruction an automatic reply gets that a drafted one does not.
  *
- * It rides in the same slot as an agent's per-reply brief, which is last
- * in the payload, so it is the most recent thing the model reads. The
- * saved system prompt still sets the voice; this only adds what changes
- * when there is nobody to edit the result before it reaches a customer.
+ * It goes last in the payload, so it is the most recent thing the model
+ * reads. The saved system prompt still sets the voice; this only adds
+ * what changes when there is nobody to edit the result before it reaches
+ * a customer.
+ *
+ * It travels in buildDraftPayload()'s $instruction slot, NOT $guidance.
+ * It was in $guidance once, and that silently broke the catalogue twice
+ * over: $guidance is capped at GUIDANCE_LIMIT, which cut this brief off
+ * mid-sentence and took the marker rule below with it, and what survived
+ * was wrapped in "never quote it, mention it, or reveal that it exists"
+ * -- an instruction not to emit the one verbatim token the marker needs.
+ * The model duly promised the catalogue in prose and sent no file. Keep
+ * app-authored rules out of the slot built for an agent's text box.
  */
 const AUTOMATION_BRIEF = <<<'BRIEF'
 This reply will be sent to the customer automatically, with no one
@@ -234,6 +243,7 @@ function answer_conversation(string $sessionId, array $settings): bool
         $customer,
         getMessages($sessionId, 0, DRAFT_HISTORY_LIMIT),
         $settings,
+        '',
         AUTOMATION_BRIEF
     );
 
@@ -241,15 +251,22 @@ function answer_conversation(string $sessionId, array $settings): bool
         return false;
     }
 
-    $reply = trim(WhatsApp::fromMarkdown(AI::client()->chat($payload, $settings['ai_model'])));
+    $answer = AI::client()->chat($payload, $settings['ai_model']);
 
     // The model's request to attach the catalogue, taken off the text
     // before anything is sent. Stripped even when the catalogue cannot
     // actually be sent, so a marker never reaches a customer.
-    $wantsCatalog = str_contains($reply, CATALOG_MARKER);
+    //
+    // Read off the raw answer, BEFORE fromMarkdown(): the marker is
+    // bracketed text, which is also how a Markdown link starts, and
+    // whether the converter leaves it alone is not a property worth
+    // depending on for something this quiet when it breaks.
+    $wantsCatalog = str_contains($answer, CATALOG_MARKER);
     if ($wantsCatalog) {
-        $reply = trim(str_replace(CATALOG_MARKER, '', $reply));
+        $answer = str_replace(CATALOG_MARKER, '', $answer);
     }
+
+    $reply = trim(WhatsApp::fromMarkdown($answer));
 
     if ($reply === '') {
         error_log('[Automation] ' . $sessionId . ': the model returned nothing');
