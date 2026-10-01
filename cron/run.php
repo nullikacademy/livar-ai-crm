@@ -36,6 +36,8 @@ require_once __DIR__ . '/../config/whatsapp.php';
 // For media_msg_type_for_mime() when attaching the catalogue. Already
 // pulled in by drafting.php, named here because this file uses it.
 require_once __DIR__ . '/../config/media.php';
+// For --check, which reports the build the server is actually running.
+require_once __DIR__ . '/../config/version.php';
 
 /**
  * Most conversations one tick will answer.
@@ -94,6 +96,18 @@ reading it first. So:
 BRIEF;
 
 guard_entry();
+
+// `--check` answers "is the deploy good?" without sending anything, and
+// without waiting for a real customer to arrive and prove it the hard
+// way. Everything that has to be true before an automatic reply can
+// carry a catalogue is verifiable offline -- the build, the settings,
+// the file on disk, and whether the marker rule survives into the
+// payload -- and all of it was silently false once. CLI only: it costs
+// nothing, but it reports settings, so it is not a web endpoint.
+if (PHP_SAPI === 'cli' && in_array('--check', $argv ?? [], true)) {
+    fwrite(STDOUT, automation_check());
+    exit(0);
+}
 
 $result = run_automation();
 
@@ -353,6 +367,94 @@ function send_catalog_after(string $sessionId, string $to): void
     }
 }
 
+
+/**
+ * `--check`: everything that must be true before a robot can answer, and
+ * before its answer can carry the catalogue. Sends nothing, calls no
+ * provider, costs nothing.
+ *
+ * The marker check is the point of this. When AUTOMATION_BRIEF was going
+ * through the wrong slot the rule was being truncated away before the
+ * model ever saw it, and NOTHING said so: the replies read fine, the run
+ * reported success, and the only symptom was a catalogue that never
+ * arrived. So this rebuilds a real payload against a throwaway
+ * conversation and looks for the rule in what the model would actually
+ * be handed, rather than trusting that the constant above is enough.
+ */
+function automation_check(): string
+{
+    $out  = [];
+    $info = app_version_info();
+    $out[] = 'Build       : v' . $info['version']
+           . ($info['commit'] !== '' ? ' · ' . $info['commit'] . ' (' . $info['branch'] . ')' : ' · no .git here');
+
+    try {
+        $settings = getSettings();
+    } catch (Throwable $e) {
+        return implode("\n", $out) . "\nDatabase    : UNREACHABLE — " . $e->getMessage() . "\n";
+    }
+
+    $on = ($settings['auto_reply_enabled'] ?? '0') === '1';
+    $out[] = 'Automation  : ' . ($on ? 'ON' : 'OFF')
+           . ', ' . (int) ($settings['auto_reply_max'] ?? 0) . ' replies per conversation'
+           . ', waits ' . (int) ($settings['auto_reply_quiet_seconds'] ?? 0) . 's'
+           . ', only chats started after ' . (($settings['auto_reply_since'] ?? '') ?: 'the beginning');
+
+    $catalog = getCatalogFile();
+    $out[] = 'Catalogue   : ' . ($catalog === null
+        ? 'MISSING — nothing uploaded, or the file is gone from disk'
+        : $catalog['name'] . ' (' . $catalog['mime'] . ', ' . $catalog['size'] . ' bytes)');
+
+    // The payload the model would be handed, built the real way.
+    $probe = buildDraftPayload(
+        ['session_id' => '--check', 'wa_id' => '0'],
+        [['id' => 1, 'type' => 'human', 'direction' => 'in', 'msg_type' => 'text',
+          'content' => 'do you have a catalogue?', 'created_at' => gmdate('c')]],
+        $settings,
+        '',
+        AUTOMATION_BRIEF
+    );
+
+    // Three separate ways this has failed or could fail, so three
+    // separate assertions. Matching on a phrase from the brief is not
+    // one of them: the brief is hard-wrapped, so any phrase long enough
+    // to be meaningful spans a newline and a naive match reports BROKEN
+    // on perfectly good code. Compare against the constant itself.
+    $last = $probe ? (string) (end($probe)['content'] ?? '') : '';
+    $why  = [];
+    if (!str_contains($last, CATALOG_MARKER)) {
+        $why[] = 'the ' . CATALOG_MARKER . ' rule never reaches the model';
+    }
+    if (!str_contains($last, AUTOMATION_BRIEF)) {
+        $why[] = 'the brief arrives truncated';
+    }
+    if (str_contains($last, 'never quote it, mention it, or reveal that it exists')) {
+        $why[] = 'the brief is wrapped in a rule forbidding the model to emit the marker';
+    }
+
+    $out[] = 'Catalogue rule: ' . ($why === []
+        ? 'reaches the model intact'
+        : 'BROKEN — ' . implode('; ', $why)
+          . '. The robot will promise a catalogue and send nothing');
+
+    try {
+        $waiting = getAutoReplyCandidates(
+            max(0, (int) ($settings['auto_reply_quiet_seconds'] ?? 120)),
+            max(0, (int) ($settings['auto_reply_max'] ?? 2)),
+            AUTOMATION_BATCH,
+            $settings['auto_reply_since'] ?? ''
+        );
+        $out[] = 'Waiting now : ' . count($waiting) . ' conversation(s)'
+               . ($waiting ? ' — ' . implode(', ', array_column($waiting, 'session_id')) : '');
+    } catch (Throwable $e) {
+        $out[] = 'Waiting now : could not ask — ' . $e->getMessage();
+    }
+
+    $out[] = 'Last run    : ' . (($settings['automation_last_run'] ?? '') ?: 'never')
+           . ' — ' . (($settings['automation_last_result'] ?? '') ?: 'no result recorded');
+
+    return implode("\n", $out) . "\n";
+}
 
 /**
  * Records that a run happened, and what it did.

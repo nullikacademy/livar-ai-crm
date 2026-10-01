@@ -648,6 +648,32 @@ honest answer to "is this actually working?" — the switch being on proves
 nothing on its own. It turns red if the last run is older than 15
 minutes, or if there has never been one.
 
+#### Checking a deploy without waiting for a customer
+
+`--check` reports everything that has to be true before a robot can
+answer, and before its answer can carry the catalogue. It sends nothing,
+calls no provider and costs nothing:
+
+```bash
+php /path/to/cron/run.php --check
+```
+
+```
+Build       : v1.17.0 · a1b2c3d (main)
+Automation  : ON, 2 replies per conversation, waits 120s, only chats started after 2026-10-01T07:02:58+00:00
+Catalogue   : LiVAR-Catalogue.pdf (application/pdf, 2412905 bytes)
+Catalogue rule: reaches the model intact
+Waiting now : 0 conversation(s)
+Last run    : 2026-10-01T10:03:01+00:00 — 0 replied, 0 skipped, 0 waiting
+```
+
+The **Build** line is the quickest proof a `git pull` landed. **Catalogue
+rule** is the one worth reading: it rebuilds a real payload and looks for
+the `[SEND_CATALOG]` instruction in what the model would actually be
+handed. When that broke once, every reply still read perfectly and the
+run still reported success — the only symptom was a catalogue the robot
+kept promising and never sent.
+
 #### What the AI is told
 
 The same conversation an agent would see — the thread, the customer's
