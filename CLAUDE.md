@@ -232,6 +232,18 @@ README** — the template stays placeholders-only.
   360dialog can't log in, so that one endpoint authenticates on an
   unguessable token in its own URL, compared with `hash_equals()`, and
   answers 404 on a mismatch. Any new `/api` route needs the auth guard.
+- **`require_auth()` drops the session lock, and the session is
+  read-only after login.** PHP's file session handler holds an exclusive
+  lock from `session_start()` to the end of the request, so two requests
+  carrying the same cookie cannot run at once — and this app is one agent
+  with one cookie, which made the whole thing single-file: ten photos in
+  a thread fetched one after another however many connections the
+  browser opened, with the 8s message poll queueing behind them. Measured
+  on a concurrent server, six 300ms requests sharing a session: 1.81s
+  holding the lock, 0.33s releasing it. So `require_auth()` calls
+  `auth_release_session()` the moment the check passes. Nothing outside
+  `config/auth.php` may write `$_SESSION`; anything that starts to must
+  write BEFORE `require_auth()`, or re-open with `auth_boot_session()`.
 - **Media is never served from disk.** `storage/` is denied by Apache;
   `api/media.php` and `api/avatar.php` are the only readers, both through
   `media_stream()`, and every path is resolved with `media_abs_path()`,
@@ -239,6 +251,17 @@ README** — the template stays placeholders-only.
   server-generated hex and extensions come from a mime allowlist — never
   from anything a sender supplied. A new endpoint that serves bytes uses
   `media_stream()` rather than writing the headers again.
+- **`media_stream()` answers byte ranges, and says so on every reply.**
+  `Accept-Ranges: bytes` goes out even on a full 200, because a browser
+  that is not told will never ask: Chrome's PDF viewer then has to pull
+  a whole 1 MB document before drawing page one, and a video can only be
+  downloaded, never seeked. A single `bytes=a-b` is honoured with a 206
+  and a `Content-Range`; a range past the end is a 416; a Range header
+  in any other shape is ignored and answered in full, as the RFC asks.
+  Multipart ranges are deliberately not implemented — nothing here needs
+  them and half an implementation is worse than none. It also clears
+  output buffering and lifts the time limit before writing bytes, or a
+  shared host holds the whole file in memory before sending any of it.
 - **WhatsApp is not Markdown, and drafts are converted, not asked
   nicely.** Bold is one asterisk; a model's `**bold**` reaches the
   customer wearing a spare asterisk at each end.

@@ -575,8 +575,13 @@ function getMessageRow(int $id): ?array
 {
     $sb     = Supabase::client();
     $result = $sb->get('n8n_chat_history', [
-        'id'     => 'eq.' . $id,
-        'select' => '*',
+        'id' => 'eq.' . $id,
+        // Named rather than '*'. This runs once per image before a
+        // single byte is served, over a hop to another region, and '*'
+        // drags the message body and the whole referral blob along for
+        // a reply that only needs where the file is.
+        'select' => 'id,media_path,media_mime,media_name,media_size,'
+                  . 'wa_media_id,referral_media_path,referral_media_mime',
         'limit'  => '1',
     ]);
 

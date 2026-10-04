@@ -252,7 +252,6 @@ function media_stream(string $abs, string $mime, string $name = ''): never
     }
 
     header('Content-Type: ' . $mime);
-    header('Content-Length: ' . $size);
     header('X-Content-Type-Options: nosniff');
     header('Content-Security-Policy: default-src \'none\'; sandbox');
     header('ETag: ' . $etag);
@@ -261,6 +260,30 @@ function media_stream(string $abs, string $mime, string $name = ''): never
     // response is only valid for this signed-in agent.
     header('Cache-Control: private, max-age=31536000, immutable');
     header('Content-Disposition: inline' . (($name !== '') ? '; filename="' . media_safe_filename($name) . '"' : ''));
+    // Say so even when answering in full. Without it a browser will not
+    // ask for ranges at all: Chrome's PDF viewer then has to pull a
+    // whole 1 MB document before it can draw page one, and a video
+    // cannot be seeked, only downloaded.
+    header('Accept-Ranges: bytes');
+
+    [$start, $end, $partial] = media_range($size);
+
+    if ($partial && $start === null) {
+        // Asked for bytes that are not there.
+        http_response_code(416);
+        header('Content-Range: bytes */' . $size);
+        exit;
+    }
+
+    $start  = $start ?? 0;
+    $end    = $end ?? max(0, $size - 1);
+    $length = $size === 0 ? 0 : $end - $start + 1;
+
+    if ($partial) {
+        http_response_code(206);
+        header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+    }
+    header('Content-Length: ' . $length);
 
     // Stream rather than file_get_contents: a 16 MB video should not
     // have to fit in PHP's memory limit.
@@ -270,9 +293,84 @@ function media_stream(string $abs, string $mime, string $name = ''): never
         // own the response format. The route above catches this.
         throw new RuntimeException('That file could not be opened for reading.');
     }
-    fpassthru($fh);
+
+    // A big file on a slow phone can outlast the default time limit, and
+    // output buffering -- on by default on a lot of shared hosts -- would
+    // hold the whole thing in memory before sending a single byte, which
+    // is exactly the stall this function is trying not to cause.
+    @set_time_limit(0);
+    while (ob_get_level() > 0) {
+        ob_end_flush();
+    }
+
+    if ($start > 0) {
+        fseek($fh, $start);
+    }
+
+    $remaining = $length;
+    while ($remaining > 0 && !feof($fh)) {
+        $chunk = fread($fh, (int) min(262144, $remaining));
+        if ($chunk === false || $chunk === '') {
+            break;
+        }
+        echo $chunk;
+        $remaining -= strlen($chunk);
+        flush();
+    }
+
     fclose($fh);
     exit;
+}
+
+/**
+ * The byte range the browser asked for, if any.
+ *
+ * Only a single `bytes=a-b` is honoured. Multipart ranges are legal and
+ * nothing playing media here needs them, and half an implementation of
+ * one is worse than none -- a Range we do not understand is ignored and
+ * answered in full, which is what the RFC asks for.
+ *
+ * @return array{0: ?int, 1: ?int, 2: bool} start, end, and whether this
+ *         is a partial response. A partial response with a null start
+ *         means the range cannot be satisfied.
+ */
+function media_range(int $size): array
+{
+    $header = trim((string) ($_SERVER['HTTP_RANGE'] ?? ''));
+    if ($header === '' || $size <= 0) {
+        return [null, null, false];
+    }
+
+    if (preg_match('/^bytes=(\d*)-(\d*)$/', $header, $m) !== 1) {
+        return [null, null, false];
+    }
+
+    [, $first, $last] = $m;
+
+    if ($first === '' && $last === '') {
+        return [null, null, false];
+    }
+
+    if ($first === '') {
+        // A suffix range: the last N bytes.
+        $n = (int) $last;
+        if ($n <= 0) {
+            return [null, null, true];
+        }
+        return [max(0, $size - $n), $size - 1, true];
+    }
+
+    $start = (int) $first;
+    $end   = $last === '' ? $size - 1 : (int) $last;
+
+    if ($end > $size - 1) {
+        $end = $size - 1;
+    }
+    if ($start > $end || $start > $size - 1) {
+        return [null, null, true];
+    }
+
+    return [$start, $end, true];
 }
 
 /**
