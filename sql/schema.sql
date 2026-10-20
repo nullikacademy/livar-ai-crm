@@ -464,13 +464,22 @@ grant execute on function public.get_customers_with_preview(text, int, int, text
 -- Everything that decides whether an automatic reply may go out, in one
 -- place and one round trip. A conversation qualifies only when ALL hold:
 --
---   * the CUSTOMER started it -- the oldest message in the thread is
---     inbound. Any new chat qualifies, from an ad or not. This is what
---     keeps the robot out of conversations the business began: someone
---     messaged from the WhatsApp app on the phone gets a customer row
---     from the echo, and their reply to us is not a new lead writing in.
---     (This was "some message carries an ad referral" until ads stopped
---     being the only new chats worth answering.);
+--   * NO PERSON HAS EVER REPLIED in it -- not one outbound row that the
+--     robot did not write. A "new chat" means one nobody is handling
+--     yet, and the moment an agent answers, from the CRM or from the
+--     WhatsApp app on the phone, the conversation is theirs for good.
+--     It also covers chats the business started, whose first row is ours.
+--     Anything not marked 'auto'/'auto_doc' counts as a person, including
+--     legacy rows with no wa_source -- when unsure, the robot stays out.
+--
+--     This replaced "the oldest message is inbound", which was not
+--     enough: a regular customer the CRM had simply never seen before
+--     got a brand-new row, wrote first, and the robot then walked into
+--     the middle of an hour-long order an agent was negotiating from
+--     the phone. Ad leads had the same hole before that -- the newest-
+--     message rule below only stands the robot down until the customer
+--     speaks again, which is not the same as "a person has this one".
+--     Any new chat qualifies, from an ad or not;
 --   * the newest message in the thread is INBOUND. This is the rule that
 --     makes the whole thing safe: a reply from anyone, agent or robot,
 --     clears the pending state. Automation can never talk over an agent
@@ -516,7 +525,12 @@ as $$
     with threads as (
         select
             c.session_id,
-            first_row.direction as first_direction,
+            exists (
+                select 1 from public.n8n_chat_history p
+                 where p.session_id = c.session_id
+                   and p.direction = 'out'
+                   and coalesce(p.wa_source, '') not in ('auto', 'auto_doc')
+            ) as person_replied,
             (
                 select count(*) from public.n8n_chat_history a
                  where a.session_id = c.session_id
@@ -532,13 +546,6 @@ as $$
              order by h.created_at desc, h.id desc
              limit 1
         ) last_row on true
-        left join lateral (
-            select h.direction
-              from public.n8n_chat_history h
-             where h.session_id = c.session_id
-             order by h.created_at asc, h.id asc
-             limit 1
-        ) first_row on true
         where c.last_inbound_at is not null
           and c.last_inbound_at > now() - make_interval(hours => p_window_hours)
           -- "New chats only": the customer row is created on first
@@ -547,7 +554,7 @@ as $$
     )
     select t.session_id, t.auto_sent, t.last_at
       from threads t
-     where t.first_direction = 'in'
+     where not t.person_replied
        and t.last_direction = 'in'
        and t.last_at <= now() - make_interval(secs => p_quiet_seconds)
        and t.auto_sent < p_max_replies

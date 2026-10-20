@@ -151,9 +151,10 @@ function asset(string $relativePath): string
                         <span class="switch__label">Reply automatically to new chats</span>
                     </label>
                     <p class="field__help">
-                        Only conversations the customer started after this was switched
-                        on. A new message in an existing chat, or a chat you started,
-                        always waits for a person.
+                        Only conversations that started after this was switched on and
+                        that no person has replied to yet. The moment anyone on your team
+                        answers — here or from the WhatsApp app — that chat is theirs and
+                        automation stays out of it for good.
                     </p>
                     <p class="field__help" id="automationScope"></p>
                 </div>

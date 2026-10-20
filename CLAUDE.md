@@ -123,12 +123,16 @@ README** — the template stays placeholders-only.
   makes it safe: **the newest message in the thread must be inbound**, so
   a reply from anyone, agent or robot, stands it down. Scope is **new
   chats**, ad or not, and deliberately not a setting: the conversation
-  must have started after `auto_reply_since` AND its **oldest** message
-  must be inbound. That second half is not decoration — a chat the
-  business opens from the WhatsApp app gets a fresh `livar_customer` row
-  from the echo, so `created_at` alone would let the robot answer the
-  customer's reply to us. A new message in an existing chat is never
-  answered. (It was ad-only until v1.19.0; an ad still matters, because
+  must have started after `auto_reply_since` AND **no person may ever
+  have replied in it** — no outbound row other than `'auto'`/`'auto_doc'`,
+  with a NULL `wa_source` counting as a person. "Newest message is
+  inbound" is NOT that: it only stands the robot down until the customer
+  speaks again. v1.19.0 used "oldest message is inbound" instead and the
+  robot walked into three live negotiations in forty minutes — the CRM
+  first sees a regular customer whenever they next write, so `created_at`
+  says nothing about whether a person already has the conversation. Once
+  anyone on the team answers, from here or from the phone, the chat is
+  theirs for good. (Ad-only until v1.19.0; an ad still matters, because
   `referralTurn()` hands the model the creative, but it no longer gates.) It builds its payload with the same
   `buildDraftPayload()` the Draft button uses, so an automatic reply
   reasons from exactly what an agent reviewing it afterwards would see,

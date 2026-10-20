@@ -19,8 +19,9 @@
  * WHAT IT WILL NOT DO. Everything that decides whether a robot may speak
  * lives in get_auto_reply_candidates() in sql/schema.sql, which is worth
  * reading before changing anything here. The short version: only
- * conversations the customer started after automation was switched on
- * -- never a new message in an existing chat, never a chat we started --
+ * conversations that started after automation was switched on and that
+ * NO PERSON has ever replied to -- once anyone on the team answers, from
+ * here or from the phone, the robot never speaks in that chat again --
  * only when the newest message in the thread is the customer's -- so a
  * reply from ANYONE, agent or robot, stands it down --
  * only after the customer has been quiet a while, only inside the

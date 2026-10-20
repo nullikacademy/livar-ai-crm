@@ -573,9 +573,11 @@ expired is skipped with the reason, not retried.
 
 **Settings → Automation** turns on replying, without a person, to
 **new chats** — anyone writing to you for the first time, whether they
-tapped a Click-to-WhatsApp ad or found the number some other way. Off
-until you switch it on. A new message in an **existing** chat always
-waits for a human, and so does any chat the business started.
+tapped a Click-to-WhatsApp ad or found the number some other way, and
+that nobody on your team has answered yet. Off until you switch it on.
+A new message in an **existing** chat always waits for a human, and so
+does every chat a person has replied to — including replies typed on the
+phone.
 
 It runs on a **timer, not on each incoming message**, and that is the
 point. People send three messages in a row — *"hello"*, *"do you have
@@ -587,7 +589,7 @@ A conversation is answered only when every one of these is true:
 
 | | |
 |---|---|
-| The customer started it | the first message in the thread is theirs — so a chat you began from the WhatsApp app is never picked up |
+| No person has replied in it yet | the moment anyone on your team answers — in the CRM or from the WhatsApp app — the chat is theirs, and automation never speaks in it again |
 | The conversation started after you switched automation on | see below |
 | The newest message is the customer's | a reply from *anyone* — you or the AI — stands it down |
 | They have stopped writing | for **Wait before replying**, 120s by default |

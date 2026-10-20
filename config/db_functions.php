@@ -1339,10 +1339,10 @@ PROMPT,
     // Answering customers without a person. Off unless somebody turns it
     // on: an upgrade must never start messaging customers by itself.
     //
-    // Scope is NOT configurable here -- new chats only: conversations the
-    // customer started after the switch went on (auto_reply_since below),
-    // ad or not. A new message in an existing chat is never answered;
-    // those people know us, and a robot appearing mid-relationship is a
+    // Scope is NOT configurable here -- new chats only: conversations that
+    // started after the switch went on (auto_reply_since below), ad or
+    // not, and that no person has ever replied to. Once anyone on the team
+    // answers, the chat is theirs; a robot appearing mid-relationship is a
     // decision to take on purpose, not a checkbox to find.
     'auto_reply_enabled' => '0',
 
