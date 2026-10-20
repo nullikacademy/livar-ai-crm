@@ -5,7 +5,8 @@
  *   php /path/to/cron/run.php                       (how cron should call it)
  *   GET /cron/run.php?token=<AUTOMATION_TOKEN>      (only if a token is set)
  *
- * Answers customers who arrived from a Meta ad, without a person.
+ * Answers new chats without a person -- anyone writing in for the first
+ * time, whether they tapped a Meta ad or not.
  *
  * WHY A TIMER AND NOT A WEBHOOK REFLEX. Replying the instant a message
  * lands is the obvious design and the wrong one: people send three
@@ -17,9 +18,11 @@
  *
  * WHAT IT WILL NOT DO. Everything that decides whether a robot may speak
  * lives in get_auto_reply_candidates() in sql/schema.sql, which is worth
- * reading before changing anything here. The short version: only ad
- * conversations, only when the newest message in the thread is the
- * customer's -- so a reply from ANYONE, agent or robot, stands it down --
+ * reading before changing anything here. The short version: only
+ * conversations the customer started after automation was switched on
+ * -- never a new message in an existing chat, never a chat we started --
+ * only when the newest message in the thread is the customer's -- so a
+ * reply from ANYONE, agent or robot, stands it down --
  * only after the customer has been quiet a while, only inside the
  * 24-hour window, and only until the per-conversation allowance is gone.
  *

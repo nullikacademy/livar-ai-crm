@@ -86,7 +86,7 @@ function handleSave(): void
     }
 
     // Switching automation ON draws a line under everything that came
-    // before it. Without this, turning it on would answer every ad lead
+    // before it. Without this, turning it on would answer every customer
     // already sitting inside the 24-hour window -- people who have been
     // waiting since yesterday, getting a robot reply out of nowhere.
     // Stamped here rather than in the browser: a clock the client set

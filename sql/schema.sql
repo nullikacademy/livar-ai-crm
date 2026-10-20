@@ -464,7 +464,13 @@ grant execute on function public.get_customers_with_preview(text, int, int, text
 -- Everything that decides whether an automatic reply may go out, in one
 -- place and one round trip. A conversation qualifies only when ALL hold:
 --
---   * it started from a Meta ad -- some message in it carries a referral;
+--   * the CUSTOMER started it -- the oldest message in the thread is
+--     inbound. Any new chat qualifies, from an ad or not. This is what
+--     keeps the robot out of conversations the business began: someone
+--     messaged from the WhatsApp app on the phone gets a customer row
+--     from the echo, and their reply to us is not a new lead writing in.
+--     (This was "some message carries an ad referral" until ads stopped
+--     being the only new chats worth answering.);
 --   * the newest message in the thread is INBOUND. This is the rule that
 --     makes the whole thing safe: a reply from anyone, agent or robot,
 --     clears the pending state. Automation can never talk over an agent
@@ -482,7 +488,7 @@ grant execute on function public.get_customers_with_preview(text, int, int, text
 --     free-form and WhatsApp would refuse it outside the window;
 --   * the conversation STARTED after p_since. Switching automation on
 --     stamps that moment, so turning it on answers the chats that arrive
---     from then on rather than every ad lead already sitting in the
+--     from then on rather than every customer already sitting in the
 --     24-hour window -- which is the difference between a test and a
 --     surprise for people who have been waiting since yesterday.
 --
@@ -510,11 +516,7 @@ as $$
     with threads as (
         select
             c.session_id,
-            exists (
-                select 1 from public.n8n_chat_history r
-                 where r.session_id = c.session_id
-                   and r.wa_referral is not null
-            ) as from_ad,
+            first_row.direction as first_direction,
             (
                 select count(*) from public.n8n_chat_history a
                  where a.session_id = c.session_id
@@ -530,6 +532,13 @@ as $$
              order by h.created_at desc, h.id desc
              limit 1
         ) last_row on true
+        left join lateral (
+            select h.direction
+              from public.n8n_chat_history h
+             where h.session_id = c.session_id
+             order by h.created_at asc, h.id asc
+             limit 1
+        ) first_row on true
         where c.last_inbound_at is not null
           and c.last_inbound_at > now() - make_interval(hours => p_window_hours)
           -- "New chats only": the customer row is created on first
@@ -538,7 +547,7 @@ as $$
     )
     select t.session_id, t.auto_sent, t.last_at
       from threads t
-     where t.from_ad
+     where t.first_direction = 'in'
        and t.last_direction = 'in'
        and t.last_at <= now() - make_interval(secs => p_quiet_seconds)
        and t.auto_sent < p_max_replies

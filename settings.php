@@ -138,9 +138,9 @@ function asset(string $relativePath): string
         <section class="settings__section">
             <h2>Automation</h2>
             <p class="settings__note">
-                Answering customers who arrived from a <strong>Meta ad</strong>, without
-                a person. Nobody reads these before the customer does, so start small
-                and read what it actually sent.
+                Answering <strong>new chats</strong> without a person — anyone writing
+                to you for the first time, from a Meta ad or not. Nobody reads these
+                before the customer does, so start small and read what it actually sent.
             </p>
 
             <form class="ai-form" id="autoForm">
@@ -148,11 +148,12 @@ function asset(string $relativePath): string
                     <label class="switch">
                         <input type="checkbox" id="autoEnabled" />
                         <span class="switch__track" aria-hidden="true"></span>
-                        <span class="switch__label">Reply automatically to ad conversations</span>
+                        <span class="switch__label">Reply automatically to new chats</span>
                     </label>
                     <p class="field__help">
-                        Only conversations that began with a Click-to-WhatsApp ad.
-                        Everything else always waits for a person.
+                        Only conversations the customer started after this was switched
+                        on. A new message in an existing chat, or a chat you started,
+                        always waits for a person.
                     </p>
                     <p class="field__help" id="automationScope"></p>
                 </div>

@@ -1339,11 +1339,11 @@ PROMPT,
     // Answering customers without a person. Off unless somebody turns it
     // on: an upgrade must never start messaging customers by itself.
     //
-    // Scope is deliberately narrow and NOT configurable here -- only
-    // conversations that began with a Click-to-WhatsApp ad. Those are the
-    // ones where the first question is predictable and the cost of a slow
-    // answer is highest. Widening it to every customer is a decision to
-    // take on purpose, not a checkbox to find.
+    // Scope is NOT configurable here -- new chats only: conversations the
+    // customer started after the switch went on (auto_reply_since below),
+    // ad or not. A new message in an existing chat is never answered;
+    // those people know us, and a robot appearing mid-relationship is a
+    // decision to take on purpose, not a checkbox to find.
     'auto_reply_enabled' => '0',
 
     // Automatic replies per conversation, for its whole life. Once spent,
@@ -1360,7 +1360,7 @@ PROMPT,
     // Only conversations that STARTED after this moment are answered.
     // Stamped automatically the first time automation is switched on, so
     // turning it on picks up the chats that arrive from then on rather
-    // than every ad lead already sitting in the 24-hour window. That is
+    // than every customer already sitting in the 24-hour window. That is
     // the difference between a test and a surprise for people who have
     // been waiting since yesterday.
     //

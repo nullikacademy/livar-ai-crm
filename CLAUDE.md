@@ -114,15 +114,22 @@ README** — the template stays placeholders-only.
   must not shape the next customer's reply. A brief that is set stays
   visible on the collapsed row for the same reason.
 - **Automation is a timer, and its judgement lives in SQL.** `cron/run.php`
-  answers ad conversations without a person. It is scheduled rather than
+  answers new chats without a person. It is scheduled rather than
   triggered by the webhook on purpose: customers send three messages in a
   row, and replying to the first while they are still typing is the
   behaviour the whole design exists to avoid. Every condition that decides
-  whether a robot may speak is in `get_auto_reply_candidates()` — ad
-  referral, allowance, quiet period, 24-hour window, and the one that
+  whether a robot may speak is in `get_auto_reply_candidates()` — who
+  started it, allowance, quiet period, 24-hour window, and the one that
   makes it safe: **the newest message in the thread must be inbound**, so
-  a reply from anyone, agent or robot, stands it down. Scope is ad-only
-  and deliberately not a setting. It builds its payload with the same
+  a reply from anyone, agent or robot, stands it down. Scope is **new
+  chats**, ad or not, and deliberately not a setting: the conversation
+  must have started after `auto_reply_since` AND its **oldest** message
+  must be inbound. That second half is not decoration — a chat the
+  business opens from the WhatsApp app gets a fresh `livar_customer` row
+  from the echo, so `created_at` alone would let the robot answer the
+  customer's reply to us. A new message in an existing chat is never
+  answered. (It was ad-only until v1.19.0; an ad still matters, because
+  `referralTurn()` hands the model the creative, but it no longer gates.) It builds its payload with the same
   `buildDraftPayload()` the Draft button uses, so an automatic reply
   reasons from exactly what an agent reviewing it afterwards would see,
   and stores `wa_source = 'auto'` so the thread says which words nobody

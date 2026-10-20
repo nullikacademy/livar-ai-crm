@@ -332,7 +332,7 @@
      * Which conversations are in scope.
      *
      * Switching automation on draws a line under everything before it, so
-     * it answers chats that start from then on rather than every ad lead
+     * it answers chats that start from then on rather than every customer
      * already waiting. Said out loud, because "why did it not reply to
      * that one?" is otherwise an unanswerable question.
      */
@@ -343,7 +343,7 @@
             return;
         }
         if (!since) {
-            box.textContent = 'Answering every ad conversation in the 24-hour window, including ones that started before this was switched on.';
+            box.textContent = 'Answering every new chat in the 24-hour window, including ones that started before this was switched on.';
             return;
         }
         const when = new Date(since);

@@ -569,12 +569,13 @@ has no job queue to pace one with. Pressing it when nothing is pending
 does nothing and costs nothing. A voice note whose audio Meta has since
 expired is skipped with the reason, not retried.
 
-### Answering ad leads automatically
+### Answering new chats automatically
 
 **Settings → Automation** turns on replying, without a person, to
-customers who arrived from a **Click-to-WhatsApp ad**. Off until you
-switch it on, and it stays scoped to ad conversations — everything else
-always waits for a human.
+**new chats** — anyone writing to you for the first time, whether they
+tapped a Click-to-WhatsApp ad or found the number some other way. Off
+until you switch it on. A new message in an **existing** chat always
+waits for a human, and so does any chat the business started.
 
 It runs on a **timer, not on each incoming message**, and that is the
 point. People send three messages in a row — *"hello"*, *"do you have
@@ -586,7 +587,7 @@ A conversation is answered only when every one of these is true:
 
 | | |
 |---|---|
-| It began with a Meta ad | the message carries a referral |
+| The customer started it | the first message in the thread is theirs — so a chat you began from the WhatsApp app is never picked up |
 | The conversation started after you switched automation on | see below |
 | The newest message is the customer's | a reply from *anyone* — you or the AI — stands it down |
 | They have stopped writing | for **Wait before replying**, 120s by default |
@@ -594,8 +595,12 @@ A conversation is answered only when every one of these is true:
 | The 24-hour window is open | an automatic reply is free-form, so Meta would refuse it outside |
 
 **Switching it on draws a line under everything before it.** Only
-conversations that *start* after that moment are answered — ad leads
-already sitting in the 24-hour window are left for a person. Without
+conversations that *start* after that moment are answered — customers
+already sitting in the 24-hour window are left for a person.
+
+When the chat came from an ad, the AI also sees the ad's picture and
+text, so it knows which product they mean. A chat without one simply
+has less to go on, and the reply leans on what they wrote. Without
 that, turning it on would fire replies at people who have been waiting
 since yesterday. Switch it off and on again and the line moves to the new
 moment; the settings page says which date is in force.
