@@ -312,6 +312,16 @@ function handle_message(array $message, array $contacts): ?array
         return null;
     }
 
+    // A revoke withdraws a message that is already here rather than
+    // adding one, so it never reaches the insert below. Before
+    // getOrCreateCustomerByIdentity() for the same reason the reaction
+    // above is: taking a message back should not be the thing that
+    // creates a customer record.
+    if (($message['type'] ?? '') === 'revoke') {
+        handle_revoke($message);
+        return null;
+    }
+
     $contact = contact_for($contacts, $identity);
     $identity['wa_username'] = $contact['username'];
 
@@ -487,7 +497,9 @@ function apply_echo_change(string $type, array $echo): ?array
         // A message that was in the thread and then withdrawn is a fact
         // about the conversation, and erasing it makes the reply that
         // followed unreadable.
-        updateMessageStatus($targetId, 'deleted');
+        if (!markMessageDeleted($targetId)) {
+            error_log('[WhatsApp] revoke echo for a message not in the thread: ' . $targetId);
+        }
         return null;
     }
 
@@ -789,6 +801,50 @@ function handle_reaction(array $message, string $direction = 'in'): void
         // message that never reached it. Nothing to annotate, and not a
         // failure worth retrying.
         error_log('[WhatsApp] reaction for a message not in the thread: ' . $targetId);
+    }
+}
+
+/**
+ * A message the customer took back.
+ *
+ * Meta sends this as a message of type `revoke` naming the original by
+ * id. Two limits are worth knowing: it reaches only numbers on
+ * Coexistence -- the ones also used in the WhatsApp Business app, which
+ * is the same setup the echo and contact-sync webhooks need -- and only
+ * for a message sent within roughly the last two days.
+ *
+ * The row stays and the bubble says it was deleted, exactly as
+ * apply_echo_change() already does for one of ours withdrawn from the
+ * phone. Erasing it would leave whatever was said next answering
+ * nothing.
+ *
+ * A revoke can arrive BEFORE the message it refers to: Meta retries a
+ * failed delivery for days, so the original may still be queued behind
+ * it. There is nothing to mark in that case and nothing is invented --
+ * it is logged and dropped.
+ */
+function handle_revoke(array $message): void
+{
+    $revoke = is_array($message['revoke'] ?? null) ? $message['revoke'] : [];
+
+    // Read every spelling, the way extract_referral() does: the field
+    // names here are still settling, and the id may sit on the message
+    // itself rather than inside `revoke`.
+    $targetId = (string) (
+        $revoke['original_message_id']
+        ?? $revoke['message_id']
+        ?? $revoke['id']
+        ?? $message['original_message_id']
+        ?? ''
+    );
+
+    if ($targetId === '') {
+        error_log('[WhatsApp] revoke names no message: ' . json_encode($message));
+        return;
+    }
+
+    if (!markMessageDeleted($targetId)) {
+        error_log('[WhatsApp] revoke for a message not in the thread: ' . $targetId);
     }
 }
 

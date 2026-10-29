@@ -1692,7 +1692,12 @@
             meta.appendChild(time);
         }
 
-        if (isOurs && msg.wa_status) meta.appendChild(buildStatusNode(bubble, msg));
+        // A deletion is shown whoever sent it -- the customer taking
+        // back what they said is the case this exists for. The delivery
+        // ticks are the part that is only ever about our own messages.
+        if (msg.wa_status === 'deleted' || (isOurs && msg.wa_status)) {
+            meta.appendChild(buildStatusNode(bubble, msg));
+        }
         if (meta.childElementCount > 0) bubble.appendChild(meta);
     }
 
@@ -3385,6 +3390,7 @@
             // new messages at all. Bailing out first would mean a 👍
             // never showed up until the conversation was reopened.
             applyReactions(data.reactions);
+            applyDeleted(data.deleted);
 
             if (!data.messages || data.messages.length === 0) return;
 
@@ -3434,6 +3440,31 @@
                 `.bubble-row[data-message-id="${cssEscape(String(msg.id))}"]`,
             );
             if (row) appendReactions(row, msg);
+        });
+    }
+
+    /**
+     * Marks the bubbles the server says have been withdrawn.
+     *
+     * The same problem reactions have: a deletion changes a row the
+     * browser is already holding, so an incremental fetch by id can
+     * never carry it. The row is rebuilt rather than patched, because a
+     * deletion changes the status line and dims the text together.
+     *
+     * @param {Array<number>} ids
+     */
+    function applyDeleted(ids) {
+        if (!Array.isArray(ids) || ids.length === 0) return;
+
+        const withdrawn = new Set(ids.map(Number));
+        state.messages.forEach((msg) => {
+            if (msg.wa_status === 'deleted' || !withdrawn.has(Number(msg.id))) return;
+            msg.wa_status = 'deleted';
+
+            const row = el.chatMessages.querySelector(
+                `.bubble-row[data-message-id="${cssEscape(String(msg.id))}"]`,
+            );
+            if (row) row.replaceWith(buildBubbleRow(msg));
         });
     }
 

@@ -1166,6 +1166,64 @@ function updateMessageStatus(string $waMessageId, string $status, string $error 
 }
 
 /**
+ * Marks a message as withdrawn by whoever sent it.
+ *
+ * The row stays. A message that was in the thread and then taken back
+ * is a fact about the conversation, and erasing it would leave the
+ * reply that followed answering nothing.
+ *
+ * 'deleted' sits outside WA_STATUS_RANK on purpose, which gives both
+ * halves of what is wanted: unranked, it overwrites whatever is there,
+ * including 'read'; and a 'read' arriving afterwards cannot undo it,
+ * because the rank guard only lets a status replace the lower ones it
+ * names, and 'deleted' is not among them.
+ *
+ * Returns false when no such message is here -- a revoke for something
+ * older than this install, or one that overtook the message it refers
+ * to.
+ */
+function markMessageDeleted(string $waMessageId): bool
+{
+    if ($waMessageId === '') {
+        return false;
+    }
+
+    $rows = Supabase::client()->patch(
+        'n8n_chat_history',
+        ['wa_message_id' => 'eq.' . $waMessageId],
+        ['wa_status' => 'deleted']
+    );
+
+    return $rows !== [];
+}
+
+/**
+ * The ids of this conversation's messages that have been withdrawn.
+ *
+ * Its own query for exactly the reason getReactions() is: a deletion
+ * changes a row the browser already holds, and getMessages($sinceId)
+ * only ever returns rows NEWER than what is on screen. Without it, a
+ * message deleted on the phone would go on reading as live until the
+ * conversation was reopened.
+ *
+ * Cheap by construction -- it asks only for rows actually marked
+ * deleted, which in a normal thread is none.
+ *
+ * @return array<int, int>
+ */
+function getDeletedMessageIds(string $sessionId): array
+{
+    $result = Supabase::client()->get('n8n_chat_history', [
+        'session_id' => 'eq.' . $sessionId,
+        'wa_status'  => 'eq.deleted',
+        'select'     => 'id',
+        'limit'      => '200',
+    ]);
+
+    return array_map(static fn (array $row): int => (int) $row['id'], $result['rows']);
+}
+
+/**
  * Every reaction currently on a conversation.
  *
  * Its own query because reactions break the incremental poll: they

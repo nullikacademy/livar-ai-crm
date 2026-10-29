@@ -57,6 +57,11 @@ try {
         // already returned, paid on every conversation switch -- which
         // is precisely when somebody is waiting for the thread.
         'reactions' => $sinceId > 0 ? getReactions($sessionId) : [],
+        // Withdrawn messages, and withheld from a full load for the same
+        // reason: every row a full load returns already carries its
+        // wa_status, so the browser can see a deletion without asking.
+        // A poll cannot -- the row is older than since_id.
+        'deleted'   => $sinceId > 0 ? getDeletedMessageIds($sessionId) : [],
     ]);
 } catch (SupabaseException $e) {
     error_log('[api/messages] ' . $e->getMessage());

@@ -1102,6 +1102,12 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 .bubble__status.is-read { color: #BFEAFF; }
 .bubble__status.is-failed { color: #FFD9D9; font-weight: 600; }
+/* Those two are pitched for white-on-orange. A customer's bubble is
+   white, where they all but vanish -- and "Deleted" is the one status
+   that appears on that side, so it needs its own colour rather than a
+   borrowed one. */
+.bubble--customer .bubble__status.is-failed { color: #B42318; }
+.bubble--customer .bubble__status.is-read { color: var(--ink-2); }
 
 /* The date a day's messages start under. */
 .chat__day-divider {
