@@ -768,13 +768,16 @@ function humanSize(int $bytes): string
 }
 
 /**
- * The two extensions this app genuinely needs, plus the one that decides
- * whether the webhook can defer its media downloads.
+ * The two extensions this app genuinely needs, the one that decides
+ * whether the webhook can defer its media downloads, and whether PHP is
+ * caching its own compiled code.
  */
 function checkPhp(): array
 {
     $detail = ['PHP ' . PHP_VERSION . ' (' . PHP_SAPI . ')'];
     $fail   = [];
+    $warn   = [];
+    $hints  = [];
 
     foreach (['curl' => 'every API call', 'fileinfo' => 'validating uploads'] as $ext => $why) {
         if (extension_loaded($ext)) {
@@ -790,10 +793,18 @@ function checkPhp(): array
         $detail[] = 'This app needs PHP 8.1 or newer.';
     }
 
-    $deferred = function_exists('fastcgi_finish_request');
-    $detail[] = $deferred
-        ? 'fastcgi_finish_request(): available — the webhook acknowledges before downloading media.'
-        : 'fastcgi_finish_request(): not available — media downloads run inline, so the webhook is slower to answer.';
+    if (function_exists('fastcgi_finish_request')) {
+        $detail[] = 'fastcgi_finish_request(): available — the webhook acknowledges before downloading media.';
+    } else {
+        $detail[] = 'fastcgi_finish_request(): not available — media downloads run inline, so the webhook is slower to answer.';
+        $warn[]   = 'no deferred processing';
+        $hints[]  = 'Media downloads run inline without fastcgi_finish_request(). Harmless on low volume; under php-fpm the webhook would answer faster.';
+    }
+
+    $opcache = opcacheReport();
+    $detail  = array_merge($detail, $opcache['detail']);
+    $warn    = array_merge($warn, $opcache['warn']);
+    $hints   = array_merge($hints, $opcache['hints']);
 
     if ($fail) {
         return [
@@ -804,12 +815,136 @@ function checkPhp(): array
         ];
     }
 
+    if ($warn) {
+        return [
+            'status'  => 'warn',
+            'summary' => count($warn) === 1
+                ? ucfirst($warn[0])
+                : 'Met, with ' . count($warn) . ' notes',
+            'detail'  => $detail,
+            'hint'    => implode(' ', $hints),
+        ];
+    }
+
     return [
-        'status'  => $deferred ? 'ok' : 'warn',
-        'summary' => $deferred ? 'All requirements met' : 'Met, but no deferred processing',
+        'status'  => 'ok',
+        'summary' => 'All requirements met',
         'detail'  => $detail,
-        'hint'    => $deferred ? '' : 'Harmless on low volume. Under php-fpm the webhook would answer faster.',
+        'hint'    => '',
     ];
+}
+
+/**
+ * What OPcache is doing, if anything.
+ *
+ * PHP recompiles every file it includes on every request unless OPcache
+ * is holding the compiled form in memory. This app includes around
+ * thirty files per request, so the difference is not academic — and
+ * nothing else here reported it, which is how an install ends up slow
+ * for a reason nobody thinks to look at.
+ *
+ * Three things are worth knowing and only one of them is "is it on". A
+ * cache that has filled stops accepting new scripts, so it silently
+ * stops helping. And an install with validate_timestamps off will not
+ * notice a deploy at all until php-fpm restarts — which, when you
+ * deploy by extracting a tarball, looks exactly like the upload having
+ * failed.
+ *
+ * @return array{detail: array<int, string>, warn: array<int, string>, hints: array<int, string>}
+ */
+function opcacheReport(): array
+{
+    $detail = [];
+    $warn   = [];
+    $hints  = [];
+
+    // Guarded on the function rather than on extension_loaded(): hosts
+    // routinely put opcache_get_status() in disable_functions while
+    // leaving the extension itself loaded and doing its job. Saying
+    // "off" in that case would be a lie, and this page does not guess.
+    if (!function_exists('opcache_get_status')) {
+        $loaded   = extension_loaded('Zend OPcache');
+        $detail[] = $loaded
+            ? 'OPcache: loaded, but opcache_get_status() is disabled here — could not be checked.'
+            : 'OPcache: could not be checked (opcache_get_status() is not available).';
+        $warn[]   = 'OPcache could not be checked';
+        $hints[]  = $loaded
+            ? 'OPcache is installed and probably working; this page just cannot read its status.'
+            : 'Ask your host whether OPcache is enabled — it is the largest free speed-up available to an app this size.';
+
+        return ['detail' => $detail, 'warn' => $warn, 'hints' => $hints];
+    }
+
+    $status = opcache_get_status(false);
+
+    if (!is_array($status) || empty($status['opcache_enabled'])) {
+        $detail[] = 'OPcache: OFF — PHP recompiles every file on every request.';
+        $warn[]   = 'OPcache is off';
+        $hints[]  = 'Turn OPcache on in your hosting control panel (opcache.enable=1). This app includes around thirty '
+                  . 'files per request and is currently recompiling all of them every time.';
+
+        return ['detail' => $detail, 'warn' => $warn, 'hints' => $hints];
+    }
+
+    $used   = (int) ($status['memory_usage']['used_memory'] ?? 0);
+    $free   = (int) ($status['memory_usage']['free_memory'] ?? 0);
+    $wasted = (int) ($status['memory_usage']['wasted_memory'] ?? 0);
+    $stats  = is_array($status['opcache_statistics'] ?? null) ? $status['opcache_statistics'] : [];
+
+    $scripts = (int) ($stats['num_cached_scripts'] ?? 0);
+    $hits    = (int) ($stats['hits'] ?? 0);
+    $misses  = (int) ($stats['misses'] ?? 0);
+    $lookups = $hits + $misses;
+
+    $line = 'OPcache: ON — ' . $scripts . ' script' . ($scripts === 1 ? '' : 's') . ' cached, '
+          . humanSize($used) . ' used of ' . humanSize($used + $free + $wasted) . '.';
+    if ($lookups > 0) {
+        $line .= ' Hit rate ' . round($hits / $lookups * 100, 1) . '%.';
+    }
+    $detail[] = $line;
+
+    if (!empty($status['cache_full'])) {
+        $detail[] = 'OPcache memory is FULL — new and changed files are no longer being cached.';
+        $warn[]   = 'OPcache memory is full';
+        $hints[]  = 'Raise opcache.memory_consumption (128 MB is a reasonable floor).';
+    }
+
+    $oom = (int) ($stats['oom_restarts'] ?? 0);
+    if ($oom > 0) {
+        $detail[] = 'OPcache has restarted ' . $oom . ' time' . ($oom === 1 ? '' : 's') . ' after running out of memory.';
+        if (empty($status['cache_full'])) {
+            $warn[]  = 'OPcache has run out of memory';
+            $hints[] = 'Raise opcache.memory_consumption; a restart throws the whole cache away and recompiles from cold.';
+        }
+    }
+
+    // The directives live behind a second function, which is disabled
+    // separately from the first. Everything above still stands if this
+    // one is missing.
+    if (!function_exists('opcache_get_configuration')) {
+        return ['detail' => $detail, 'warn' => $warn, 'hints' => $hints];
+    }
+
+    $config     = opcache_get_configuration();
+    $directives = is_array($config['directives'] ?? null) ? $config['directives'] : [];
+
+    // The one that bites a tarball deploy: with timestamp validation
+    // off, OPcache serves whatever it compiled at boot and never looks
+    // at the files on disk again.
+    if (array_key_exists('opcache.validate_timestamps', $directives)) {
+        if (!$directives['opcache.validate_timestamps']) {
+            $detail[] = 'OPcache is NOT checking file timestamps — a deploy will not appear until php-fpm restarts.';
+            $warn[]   = 'OPcache ignores file changes';
+            $hints[]  = 'Restart php-fpm after deploying, or set opcache.validate_timestamps=1.';
+        } else {
+            $freq     = (int) ($directives['opcache.revalidate_freq'] ?? 0);
+            $detail[] = $freq > 0
+                ? 'OPcache rechecks files every ' . $freq . 's, so a deploy can take that long to show up.'
+                : 'OPcache rechecks files on every request, so a deploy shows up immediately.';
+        }
+    }
+
+    return ['detail' => $detail, 'warn' => $warn, 'hints' => $hints];
 }
 
 // ---------------------------------------------------------------------
