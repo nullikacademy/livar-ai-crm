@@ -2394,3 +2394,107 @@ img.flag {
 @media (max-width: 360px) {
     .sidebar__logo-sub { display: none; }
 }
+
+/* ---------------------------------------------------------------------
+   Context blocks -- what the AI knows, in named pieces.
+   --------------------------------------------------------------------- */
+.blocks { display: flex; flex-direction: column; gap: 10px; }
+
+.block {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md, 10px);
+    background: var(--surface);
+    padding: 10px 12px 12px;
+    transition: opacity var(--t-base) var(--ease), border-color var(--t-base) var(--ease);
+}
+/* A block that is switched off is still readable -- it is being kept on
+   purpose, not discarded -- just visibly not in play. */
+.block.is-off { opacity: 0.55; background: var(--surface-2); }
+.block.is-saving { border-color: var(--brand, #F57C20); }
+
+.block__head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+
+.block__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 5px 7px;
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--ink);
+    background: transparent;
+}
+.block__title:hover { border-color: var(--line); }
+.block__title:focus { border-color: var(--brand, #F57C20); background: var(--surface); outline: none; }
+
+/* A row of these sits inside a card header, so the page switch is
+   scaled down rather than restyled -- same component, less of it. */
+.switch--sm { gap: 6px; }
+.switch--sm .switch__track { width: 32px; height: 18px; }
+.switch--sm .switch__track::after { width: 14px; height: 14px; }
+.switch--sm input:checked + .switch__track::after { transform: translateX(14px); }
+.switch--sm .switch__label { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+
+.block__toggle { flex: 0 0 auto; white-space: nowrap; }
+
+.block__moves { display: inline-flex; gap: 2px; }
+.block__btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink-2);
+    font-size: 13px;
+    cursor: pointer;
+}
+.block__btn:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
+.block__btn:disabled { opacity: 0.3; cursor: default; }
+.block__btn--danger:hover:not(:disabled) { background: #FDECEA; color: #B42318; }
+
+.block__body {
+    width: 100%;
+    min-height: 92px;
+    resize: vertical;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 10px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--ink);
+    background: var(--surface);
+    font-family: inherit;
+}
+.block__body:focus { border-color: var(--brand, #F57C20); outline: none; }
+
+.blocks__actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+.blocks__count { font-size: 12px; color: var(--ink-3); }
+
+.blocks__empty {
+    border: 1px dashed var(--line);
+    border-radius: var(--r-md, 10px);
+    padding: 18px;
+    text-align: center;
+    color: var(--ink-2);
+}
+.blocks__empty p { margin: 0 0 10px; font-size: 13.5px; }
+
+.blocks__warning {
+    margin: 4px 0 0;
+    padding: 9px 11px;
+    border-radius: 8px;
+    background: #FFF6E6;
+    border: 1px solid #F3DCB3;
+    color: #8A5A00;
+    font-size: 12.5px;
+}

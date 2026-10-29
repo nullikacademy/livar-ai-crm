@@ -101,19 +101,26 @@ function asset(string $relativePath): string
                     </p>
                 </div>
 
-                <div class="field">
-                    <label for="aiPrompt">System prompt</label>
-                    <textarea id="aiPrompt" rows="14" spellcheck="false"></textarea>
-                    <p class="field__help">
-                        Save an empty box to go back to the built-in prompt.
-                    </p>
-                </div>
-
                 <div class="ai-form__actions">
-                    <button type="button" class="btn btn--ghost" id="aiResetBtn">Restore default</button>
                     <button type="submit" class="btn btn--primary" id="aiSaveBtn">Save</button>
                 </div>
             </form>
+        </section>
+
+        <section class="settings__section">
+            <h2>What the AI knows</h2>
+            <p class="settings__note">
+                The standing facts behind every reply &mdash; who you are, what you
+                sell, how you ship. Every block that is switched on is sent to the
+                model, in the order below. Changes save when you click away.
+            </p>
+
+            <div class="blocks" id="blockList"></div>
+
+            <div class="blocks__actions">
+                <button type="button" class="btn btn--ghost" id="blockAddBtn">Add a block</button>
+                <span class="blocks__count" id="blockCount"></span>
+            </div>
         </section>
 
         <section class="settings__section">

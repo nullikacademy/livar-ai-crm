@@ -260,6 +260,67 @@ create table if not exists public.livar_settings (
     updated_at timestamptz not null default now()
 );
 
+-- ---------------------------------------------------------------------------
+-- The AI's standing knowledge, in pieces.
+--
+-- This supersedes the single ai_system_prompt setting. One long box meant
+-- editing the brand paragraph put the shipping paragraph at risk, and
+-- there was no way to take the product list out of the prompt for an
+-- afternoon without cutting it somewhere safe first. Blocks are named,
+-- ordered and switchable one at a time, and every enabled one is handed
+-- to the model.
+--
+-- `position` orders them, with id breaking ties, so the order is total
+-- and a block cannot shuffle between two reads.
+create table if not exists public.livar_context_block (
+    id         bigserial primary key,
+    title      text not null,
+    body       text not null default '',
+    position   int not null default 0,
+    enabled    boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_livar_context_block_order
+    on public.livar_context_block (position, id);
+
+-- Carry an existing prompt over, exactly once.
+--
+-- The guard is a marker row, not "is the table empty". Empty-table would
+-- be wrong in the one case that actually matters: somebody splits the
+-- prompt into blocks, later deletes the ones they no longer want, and a
+-- re-run of this file hands them the whole original back. The marker
+-- says "this install has already been offered its old prompt", which is
+-- true from then on however many blocks exist.
+--
+-- A fresh install has no prompt to carry: it gets the marker, no blocks,
+-- and its default from SETTING_DEFAULTS in PHP until somebody writes
+-- one. The settings page offers a button to start from that default.
+do $$
+declare
+    existing text;
+begin
+    if exists (select 1 from public.livar_settings where key = 'context_blocks_seeded') then
+        return;
+    end if;
+
+    select value into existing
+      from public.livar_settings
+     where key = 'ai_system_prompt'
+       and coalesce(trim(value), '') <> '';
+
+    if existing is not null and not exists (select 1 from public.livar_context_block) then
+        insert into public.livar_context_block (title, body, position)
+        values ('General', existing, 0);
+    end if;
+
+    insert into public.livar_settings (key, value)
+    values ('context_blocks_seeded', now()::text)
+    on conflict (key) do nothing;
+end
+$$;
+
 -- Lock the tables to the service_role -------------------------------------
 -- Everything above is reachable through PostgREST, which means anyone
 -- holding the project's ANON key could otherwise read and write it --
@@ -277,6 +338,7 @@ alter table public.livar_customer   enable row level security;
 alter table public.n8n_chat_history enable row level security;
 alter table public.livar_wa_contact enable row level security;
 alter table public.livar_settings   enable row level security;
+alter table public.livar_context_block enable row level security;
 
 -- ============================================================================
 -- RPC function used by the CRM's REST-based data layer (config/db_functions.php)

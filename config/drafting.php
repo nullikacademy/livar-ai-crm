@@ -88,7 +88,11 @@ function buildDraftPayload(
     }
 
     $payload = array_merge(
-        [['role' => 'system', 'content' => $settings['ai_system_prompt']]],
+        // Assembled from the context blocks, falling back to the single
+        // ai_system_prompt when none is enabled. Both callers go through
+        // here, so the agent pressing Draft and cron/run.php answering on
+        // its own cannot be reasoning from different knowledge.
+        [['role' => 'system', 'content' => composeSystemPrompt($settings)]],
         [['role' => 'system', 'content' => customerContext($customer)]],
         $turns
     );

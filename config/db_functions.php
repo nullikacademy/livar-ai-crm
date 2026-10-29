@@ -1512,6 +1512,235 @@ function getSettings(): array
     return $cache = $values;
 }
 
+// ---------------------------------------------------------------------------
+// Context blocks -- the AI's standing knowledge, in named pieces.
+// ---------------------------------------------------------------------------
+
+/** A heading, not a paragraph. */
+const CONTEXT_BLOCK_TITLE_LIMIT = 80;
+
+/** Per block. The whole prompt used to fit in one of these. */
+const CONTEXT_BLOCK_BODY_LIMIT = 20000;
+
+/**
+ * Most blocks one install may have.
+ *
+ * Not a storage limit -- every enabled block is sent on every draft, so
+ * this is really a cap on what each reply costs. Forty named sections is
+ * already far more structure than a sales prompt needs.
+ */
+const CONTEXT_BLOCK_MAX = 40;
+
+/**
+ * Every block, in the order they are shown and sent.
+ *
+ * Memoised like getSettings(), because composeSystemPrompt() is called
+ * once per draft and cron/run.php drafts in a loop. $fresh is for the
+ * endpoint, which has just written and must not read its own stale copy.
+ *
+ * @return array<int, array{id: int, title: string, body: string, position: int, enabled: bool}>
+ */
+function getContextBlocks(bool $fresh = false): array
+{
+    static $cache = null;
+    if (!$fresh && $cache !== null) {
+        return $cache;
+    }
+
+    try {
+        $result = Supabase::client()->get('livar_context_block', [
+            'select' => 'id,title,body,position,enabled',
+            'order'  => 'position.asc,id.asc',
+            'limit'  => (string) CONTEXT_BLOCK_MAX,
+        ]);
+    } catch (SupabaseException $e) {
+        // A database that has not had sql/schema.sql run against it.
+        // Drafting falls back to the single prompt, which is exactly
+        // what that fallback is for, so this must not be fatal.
+        error_log('[Supabase] could not read livar_context_block: ' . $e->getMessage());
+        return $cache = [];
+    }
+
+    $blocks = [];
+    foreach ($result['rows'] as $row) {
+        $blocks[] = [
+            'id'       => (int) $row['id'],
+            'title'    => (string) ($row['title'] ?? ''),
+            'body'     => (string) ($row['body'] ?? ''),
+            'position' => (int) ($row['position'] ?? 0),
+            'enabled'  => (bool) ($row['enabled'] ?? true),
+        ];
+    }
+
+    return $cache = $blocks;
+}
+
+/**
+ * The system prompt the model is actually given.
+ *
+ * Each enabled block under its own heading, so the model can tell a
+ * brand fact from a shipping rule instead of reading one undifferentiated
+ * wall of text.
+ *
+ * Falls back to ai_system_prompt when nothing is enabled. That is not a
+ * silent default -- it covers an un-migrated database and an install
+ * where every block has been switched off, and the settings page says
+ * which of those is happening rather than leaving it to be discovered
+ * in a draft.
+ *
+ * @param array<string, string>|null $settings
+ */
+function composeSystemPrompt(?array $settings = null): string
+{
+    $parts = [];
+
+    foreach (getContextBlocks() as $block) {
+        if (!$block['enabled']) {
+            continue;
+        }
+        $body = trim($block['body']);
+        if ($body === '') {
+            continue;
+        }
+        $parts[] = '## ' . $block['title'] . "\n" . $body;
+    }
+
+    if ($parts) {
+        return implode("\n\n", $parts);
+    }
+
+    $settings ??= getSettings();
+    return (string) ($settings['ai_system_prompt'] ?? SETTING_DEFAULTS['ai_system_prompt']);
+}
+
+/** Collapses whitespace and trims to length. Never empty. */
+function contextBlockTitle(string $title): string
+{
+    $title = trim((string) preg_replace('/\s+/u', ' ', $title));
+    return $title === '' ? 'Untitled' : mb_substr($title, 0, CONTEXT_BLOCK_TITLE_LIMIT);
+}
+
+function contextBlockBody(string $body): string
+{
+    return mb_substr(trim($body), 0, CONTEXT_BLOCK_BODY_LIMIT);
+}
+
+/**
+ * Adds a block at the end.
+ *
+ * @return array<string, mixed>
+ */
+function createContextBlock(string $title, string $body): array
+{
+    $blocks = getContextBlocks(true);
+    if (count($blocks) >= CONTEXT_BLOCK_MAX) {
+        throw new SupabaseException(
+            'That is as many context blocks as one install can have (' . CONTEXT_BLOCK_MAX . ').',
+            422
+        );
+    }
+
+    $position = 0;
+    foreach ($blocks as $block) {
+        $position = max($position, $block['position'] + 1);
+    }
+
+    $rows = Supabase::client()->post('livar_context_block', [
+        'title'    => contextBlockTitle($title),
+        'body'     => contextBlockBody($body),
+        'position' => $position,
+    ]);
+
+    return $rows[0] ?? [];
+}
+
+/**
+ * Changes a block's title, body or enabled flag. Only what is passed.
+ *
+ * @param array<string, mixed> $fields
+ * @return array<string, mixed>|null null when nothing was asked for, or
+ *                                   no such block
+ */
+function updateContextBlock(int $id, array $fields): ?array
+{
+    $payload = [];
+
+    if (array_key_exists('title', $fields)) {
+        $payload['title'] = contextBlockTitle((string) $fields['title']);
+    }
+    if (array_key_exists('body', $fields)) {
+        $payload['body'] = contextBlockBody((string) $fields['body']);
+    }
+    if (array_key_exists('enabled', $fields)) {
+        $payload['enabled'] = (bool) $fields['enabled'];
+    }
+
+    if (!$payload) {
+        return null;
+    }
+
+    $payload['updated_at'] = gmdate('c');
+
+    $rows = Supabase::client()->patch('livar_context_block', ['id' => 'eq.' . $id], $payload);
+    return $rows[0] ?? null;
+}
+
+function deleteContextBlock(int $id): bool
+{
+    return Supabase::client()->delete('livar_context_block', ['id' => 'eq.' . $id]) !== [];
+}
+
+/**
+ * Moves a block one place up or down.
+ *
+ * Positions are rewritten from the resulting order rather than swapped
+ * with the neighbour, because two blocks can legitimately share a
+ * number: the migrated block starts at 0, and so would anything written
+ * straight into the table. Swapping equal positions changes nothing and
+ * the move would silently do nothing at all.
+ *
+ * Only rows whose number actually changes are written, so an ordinary
+ * move costs two requests and a one-off renumber costs as many as it
+ * has to.
+ */
+function moveContextBlock(int $id, string $direction): bool
+{
+    $blocks = getContextBlocks(true);
+
+    $index = null;
+    foreach ($blocks as $i => $block) {
+        if ($block['id'] === $id) {
+            $index = $i;
+            break;
+        }
+    }
+    if ($index === null) {
+        return false;
+    }
+
+    $target = $direction === 'up' ? $index - 1 : $index + 1;
+    if ($target < 0 || $target >= count($blocks)) {
+        // Already at the end it is being pushed towards.
+        return false;
+    }
+
+    [$blocks[$index], $blocks[$target]] = [$blocks[$target], $blocks[$index]];
+
+    $sb  = Supabase::client();
+    $now = gmdate('c');
+    foreach ($blocks as $i => $block) {
+        if ($block['position'] === $i) {
+            continue;
+        }
+        $sb->patch('livar_context_block', ['id' => 'eq.' . $block['id']], [
+            'position'   => $i,
+            'updated_at' => $now,
+        ]);
+    }
+
+    return true;
+}
+
 /**
  * Conversations an automatic reply should answer right now.
  *

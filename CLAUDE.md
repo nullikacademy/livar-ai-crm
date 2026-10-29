@@ -178,8 +178,24 @@ README** — the template stays placeholders-only.
   `SETTING_AGENT_EDITABLE`; both are explicit allowlists, never
   "everything except", so `catalog_path` cannot leak through a key added
   later.
-- **The model and system prompt are database settings, not constants.**
-  They live in `livar_settings` so the settings page can change them;
+- **The system prompt is assembled from context blocks, not stored
+  whole.** `livar_context_block` holds named, ordered, individually
+  switchable pieces — Brand, Products, Shipping — and
+  `composeSystemPrompt()` joins every enabled one under its own `##`
+  heading. `buildDraftPayload()` calls it, so the Draft button and
+  `cron/run.php` cannot drift apart. It falls back to the single
+  `ai_system_prompt` when no block is enabled, which covers an
+  un-migrated database and an install where everything is switched off;
+  the settings page says which, rather than leaving it to surface in a
+  draft. `getContextBlocks()` memoises per request because automation
+  drafts in a loop, and takes `$fresh` for the endpoint that has just
+  written. The seeding migration in `sql/schema.sql` is guarded on a
+  `context_blocks_seeded` marker row, NOT on the table being empty: the
+  empty check would hand somebody their whole original prompt back the
+  first time they deleted every block they had split it into.
+- **The model and the fallback prompt are database settings, not
+  constants.** They live in `livar_settings` so the settings page can
+  change them;
   `SETTING_DEFAULTS` in `db_functions.php` holds the fallbacks. API keys
   stay in `config/config.php`, which the app must never write to. Any new
   setting needs a key in `SETTING_DEFAULTS` — `api/settings.php` refuses

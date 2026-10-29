@@ -15,6 +15,7 @@
     const API_SETTINGS = 'api/settings.php';
     const API_CATALOG = 'api/catalog.php';
     const API_TRANSCRIBE = 'api/transcribe.php';
+    const API_BLOCKS = 'api/context_blocks.php';
 
     const el = {
         list: document.getElementById('healthList'),
@@ -35,13 +36,15 @@
         aiModel: document.getElementById('aiModel'),
         aiModelList: document.getElementById('aiModelList'),
         aiModelHelp: document.getElementById('aiModelHelp'),
-        aiPrompt: document.getElementById('aiPrompt'),
         aiTranscribeModel: document.getElementById('aiTranscribeModel'),
         transcribeBtn: document.getElementById('transcribeBtn'),
         transcribeNote: document.getElementById('transcribeNote'),
         transcribeResult: document.getElementById('transcribeResult'),
         aiSaveBtn: document.getElementById('aiSaveBtn'),
-        aiResetBtn: document.getElementById('aiResetBtn'),
+        // Context blocks
+        blockList: document.getElementById('blockList'),
+        blockAddBtn: document.getElementById('blockAddBtn'),
+        blockCount: document.getElementById('blockCount'),
         // Catalog
         catalogInfo: document.getElementById('catalogInfo'),
         catalogInput: document.getElementById('catalogInput'),
@@ -261,8 +264,6 @@
             defaults = data.defaults || {};
             el.aiModel.value = data.settings.ai_model || '';
             el.aiTranscribeModel.value = data.settings.ai_transcribe_model || '';
-            el.aiPrompt.value = data.settings.ai_system_prompt || '';
-
             paintAutomation(data.settings);
 
             // Autocomplete from the account's real model list. Free text
@@ -296,7 +297,6 @@
                 body: JSON.stringify({
                     ai_model: el.aiModel.value.trim(),
                     ai_transcribe_model: el.aiTranscribeModel.value.trim(),
-                    ai_system_prompt: el.aiPrompt.value,
                 }),
             });
 
@@ -305,7 +305,6 @@
                 // visibly comes back as the restored default.
                 el.aiModel.value = data.settings.ai_model || '';
                 el.aiTranscribeModel.value = data.settings.ai_transcribe_model || '';
-                el.aiPrompt.value = data.settings.ai_system_prompt || '';
                 toast('AI settings saved.');
             }
         } catch (err) {
@@ -420,12 +419,218 @@
         }
     });
 
-    el.aiResetBtn.addEventListener('click', () => {
-        el.aiPrompt.value = defaults.ai_system_prompt || '';
-        el.aiModel.value = defaults.ai_model || '';
-        el.aiTranscribeModel.value = defaults.ai_transcribe_model || '';
-        toast('Defaults restored — press Save to keep them.');
-    });
+    // ------------------------------------------------------------------
+    // Context blocks
+    //
+    // What the AI knows, in named pieces. Replaces the single prompt box:
+    // one long field meant editing the brand paragraph put the shipping
+    // paragraph at risk, and there was no way to switch the product list
+    // off for an afternoon without cutting it somewhere safe first.
+    //
+    // Title and body save when the field loses focus and something
+    // actually changed. Toggling, moving and deleting apply at once --
+    // those are single clicks with nothing to lose by committing them.
+    // ------------------------------------------------------------------
+
+    let blockLimits = { max: 40, title: 80, body: 20000 };
+
+    async function loadBlocks() {
+        try {
+            const data = await api(API_BLOCKS);
+            if (data) paintBlocks(data);
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    }
+
+    function paintBlocks(data) {
+        blockLimits = data.limits || blockLimits;
+        const blocks = data.blocks || [];
+
+        el.blockList.textContent = '';
+
+        if (blocks.length === 0) {
+            el.blockList.appendChild(buildBlocksEmptyState());
+        } else {
+            blocks.forEach((block, i) => {
+                el.blockList.appendChild(buildBlockCard(block, i, blocks.length));
+            });
+        }
+
+        if (data.using_fallback && blocks.length > 0) {
+            el.blockList.appendChild(buildBlocksWarning(
+                'Nothing here is switched on, so the AI is running on the built-in '
+                + 'prompt. Turn a block on, or add one.',
+            ));
+        }
+
+        el.blockCount.textContent = blocks.length === 0
+            ? ''
+            : `${blocks.length} of ${blockLimits.max} · ${data.composed_length.toLocaleString()} characters sent to the model`;
+        el.blockAddBtn.disabled = blocks.length >= blockLimits.max;
+    }
+
+    function buildBlocksWarning(text) {
+        const node = document.createElement('p');
+        node.className = 'blocks__warning';
+        node.textContent = text;
+        return node;
+    }
+
+    /**
+     * What a fresh install sees.
+     *
+     * The built-in prompt lives in PHP, not in the database, so there is
+     * nothing for the migration to have carried over here. Offering it as
+     * a starting block is better than seeding one behind their back --
+     * which would also grow back every time they deleted it.
+     */
+    function buildBlocksEmptyState() {
+        const wrap = document.createElement('div');
+        wrap.className = 'blocks__empty';
+
+        const line = document.createElement('p');
+        line.textContent = 'No blocks yet, so the AI is running on the built-in prompt.';
+        wrap.appendChild(line);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn--ghost';
+        btn.textContent = 'Start from the built-in prompt';
+        btn.addEventListener('click', () => {
+            createBlock('General', defaults.ai_system_prompt || '');
+        });
+        wrap.appendChild(btn);
+
+        return wrap;
+    }
+
+    function buildBlockCard(block, index, total) {
+        const card = document.createElement('article');
+        card.className = 'block' + (block.enabled ? '' : ' is-off');
+        card.dataset.id = String(block.id);
+
+        const head = document.createElement('header');
+        head.className = 'block__head';
+
+        const title = document.createElement('input');
+        title.type = 'text';
+        title.className = 'block__title';
+        title.value = block.title;
+        title.maxLength = blockLimits.title;
+        title.placeholder = 'Brand, Products, Shipping…';
+        title.addEventListener('blur', () => {
+            if (title.value.trim() === block.title) return;
+            saveBlock(block.id, { title: title.value }, card);
+        });
+        head.appendChild(title);
+
+        // The page's own switch, not a bare checkbox: a global
+        // `input { appearance: none }` leaves one of those rendering as
+        // nothing at all.
+        const toggle = document.createElement('label');
+        toggle.className = 'switch switch--sm block__toggle';
+
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = block.enabled;
+        check.addEventListener('change', () => {
+            saveBlock(block.id, { enabled: check.checked }, card);
+        });
+
+        const track = document.createElement('span');
+        track.className = 'switch__track';
+        track.setAttribute('aria-hidden', 'true');
+
+        const toggleText = document.createElement('span');
+        toggleText.className = 'switch__label';
+        toggleText.textContent = block.enabled ? 'On' : 'Off';
+
+        toggle.append(check, track, toggleText);
+        head.appendChild(toggle);
+
+        const moves = document.createElement('div');
+        moves.className = 'block__moves';
+        moves.appendChild(buildBlockButton('↑', 'Move up', index === 0,
+            () => moveBlock(block.id, 'up')));
+        moves.appendChild(buildBlockButton('↓', 'Move down', index === total - 1,
+            () => moveBlock(block.id, 'down')));
+        const del = buildBlockButton('✕', 'Delete this block', false,
+            () => removeBlock(block.id, block.title));
+        del.classList.add('block__btn--danger');
+        moves.appendChild(del);
+        head.appendChild(moves);
+
+        card.appendChild(head);
+
+        const body = document.createElement('textarea');
+        body.className = 'block__body';
+        body.rows = 6;
+        body.spellcheck = false;
+        body.value = block.body;
+        body.maxLength = blockLimits.body;
+        body.placeholder = 'What the AI should know about this.';
+        body.addEventListener('blur', () => {
+            if (body.value.trim() === block.body.trim()) return;
+            saveBlock(block.id, { body: body.value }, card);
+        });
+        card.appendChild(body);
+
+        return card;
+    }
+
+    function buildBlockButton(glyph, label, disabled, onClick) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'block__btn';
+        btn.textContent = glyph;
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+        btn.disabled = disabled;
+        btn.addEventListener('click', onClick);
+        return btn;
+    }
+
+    /**
+     * Repaints from the whole list the server returns, not from the one
+     * row that was touched: a move renumbers several blocks at once, and
+     * rebuilding from a single row would show an order the database does
+     * not have.
+     */
+    async function sendBlocks(options, card, url = API_BLOCKS) {
+        if (card) card.classList.add('is-saving');
+        try {
+            const data = await api(url, options);
+            if (data) paintBlocks(data);
+        } catch (err) {
+            toast(err.message, 'error');
+            // The field still holds what they typed; the list is only
+            // repainted on success, so nothing they wrote is thrown away.
+            if (card) card.classList.remove('is-saving');
+        }
+    }
+
+    function saveBlock(id, fields, card) {
+        return sendBlocks({ method: 'PUT', body: JSON.stringify({ id, ...fields }) }, card);
+    }
+
+    function moveBlock(id, move) {
+        return sendBlocks({ method: 'PUT', body: JSON.stringify({ id, move }) });
+    }
+
+    function createBlock(title, body) {
+        return sendBlocks({ method: 'POST', body: JSON.stringify({ title, body }) });
+    }
+
+    function removeBlock(id, title) {
+        const name = title ? `“${title}”` : 'this block';
+        if (!window.confirm(`Delete ${name}? The AI will stop being told about it.`)) return;
+        // The id rides in the query string: a DELETE body is legal but
+        // not every host forwards one, and this needs no more than an id.
+        return sendBlocks({ method: 'DELETE' }, null, `${API_BLOCKS}?id=${encodeURIComponent(id)}`);
+    }
+
+    el.blockAddBtn.addEventListener('click', () => createBlock('New block', ''));
 
     // ------------------------------------------------------------------
     // Catalog
@@ -578,7 +783,10 @@
         }
     });
 
-    loadSettings();
+    // loadSettings() first and awaited: the empty state's "start from the
+    // built-in prompt" button needs `defaults`, which only that call
+    // fills in.
+    loadSettings().then(loadBlocks);
     loadCatalog();
     loadTranscribeStatus();
     runAll();
