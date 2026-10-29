@@ -43,13 +43,20 @@ try {
     json_response([
         'success'  => true,
         'messages' => $messages,
-        // Sent on every request, including a since_id poll that returns
-        // no new messages. A reaction changes a row that already exists,
-        // so it is invisible to an incremental fetch -- without this a
+        // Only for a since_id poll, and sent even when that poll finds
+        // no new messages. A reaction changes a row the browser already
+        // has, so an incremental fetch cannot see it -- without this a
         // customer's 👍 on an hour-old message would not appear until
-        // the conversation was reopened. Only rows that carry one are
-        // returned, so in a normal thread this is empty or tiny.
-        'reactions' => getReactions($sessionId),
+        // the conversation was reopened. Only rows carrying one come
+        // back, so in a normal thread this is empty or tiny.
+        //
+        // A full load needs none of it: every row it returns already
+        // carries wa_reaction and wa_reaction_out, and the browser
+        // paints them straight off the message. Asking again was a
+        // second round trip to Supabase for data the first one had
+        // already returned, paid on every conversation switch -- which
+        // is precisely when somebody is waiting for the thread.
+        'reactions' => $sinceId > 0 ? getReactions($sessionId) : [],
     ]);
 } catch (SupabaseException $e) {
     error_log('[api/messages] ' . $e->getMessage());
