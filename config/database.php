@@ -47,6 +47,9 @@ final class Supabase
     private string $baseUrl;
     private string $serviceKey;
 
+    /** Reused across calls so they share one connection. See handle(). */
+    private ?CurlHandle $curl = null;
+
     private function __construct()
     {
         $url = SUPABASE_URL;
@@ -202,6 +205,46 @@ final class Supabase
     }
 
     /**
+     * The one curl handle this client reuses for every call.
+     *
+     * Each call used to curl_init() a handle of its own, which meant a
+     * fresh TCP connection and a fresh TLS handshake every time -- tens
+     * of milliseconds before a byte of the actual query went out, paid
+     * again on every call. Most endpoints here make more than one: a
+     * message poll asks for the messages and then the reactions, and the
+     * inbound webhook makes a handful before it can acknowledge.
+     *
+     * Holding the handle lets curl keep the connection open and reuse
+     * it, so only the first call in a request pays for the handshake.
+     *
+     * PHP is shared-nothing, so the handle dies with the request and the
+     * next one starts cold. That is the ceiling on this: it saves
+     * handshakes WITHIN a request, never across them. An endpoint that
+     * asks Supabase exactly one thing gains nothing, and is not meant to.
+     *
+     * curl_reset() wipes every option between calls, so nothing carries
+     * over -- a POST body leaking into the next GET being the one that
+     * would actually hurt. The connection cache is what survives, which
+     * is the whole point. It also means request() must not be re-entrant;
+     * nothing here calls it from inside itself.
+     */
+    private function handle(): CurlHandle
+    {
+        if ($this->curl === null) {
+            $ch = curl_init();
+            if ($ch === false) {
+                error_log('[Supabase] curl_init() failed.');
+                $this->fail('Could not reach the database. Please try again shortly.', 502);
+            }
+            $this->curl = $ch;
+        } else {
+            curl_reset($this->curl);
+        }
+
+        return $this->curl;
+    }
+
+    /**
      * @param array<string, string> $query
      * @param array<string, mixed>|null $data
      * @param array<int, string> $extraHeaders
@@ -220,8 +263,11 @@ final class Supabase
             'Content-Type: application/json',
         ], $extraHeaders);
 
-        $ch = curl_init($url);
+        $ch = $this->handle();
         curl_setopt_array($ch, [
+            // Set here rather than passed to curl_init(): the handle
+            // outlives this call and serves the next URL too.
+            CURLOPT_URL            => $url,
             CURLOPT_CUSTOMREQUEST  => $method,
             CURLOPT_HTTPHEADER     => $headers,
             CURLOPT_RETURNTRANSFER => true,
@@ -229,6 +275,7 @@ final class Supabase
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT        => 20,
             CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_TCP_KEEPALIVE  => 1,
         ]);
         if ($data !== null) {
             curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data, JSON_UNESCAPED_UNICODE));
@@ -239,7 +286,9 @@ final class Supabase
         $error     = curl_error($ch);
         $status    = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $headerLen = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-        curl_close($ch);
+        // Deliberately not closed: the next call reuses this handle, and
+        // the connection cache it carries is the point of the exercise.
+        // PHP frees it with this object at the end of the request.
 
         if ($errno !== 0) {
             error_log("[Supabase] curl error ({$errno}): {$error}");
