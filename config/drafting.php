@@ -29,6 +29,20 @@ const DRAFT_HISTORY_LIMIT = 40;
 const DRAFT_IMAGE_LIMIT = 3;
 
 /**
+ * How long a customer can go quiet before their next message is read
+ * as possibly new work rather than the tail of the old thread.
+ *
+ * Two days is deliberately short. A packaging enquiry closes fast: the
+ * quote either lands or they buy elsewhere, so a message arriving after
+ * a long silence is more often a fresh job than the continuation of a
+ * dead one. Answering it as though the old thread were still live is
+ * the expensive mistake -- it quotes prices nobody re-agreed and
+ * assumes a requirement that may have changed. Being wrong the other
+ * way costs one clarifying question.
+ */
+const DRAFT_STALE_GAP_SECONDS = 48 * 3600;
+
+/**
  * Longest per-reply brief an agent can type before pressing Draft.
  *
  * A few sentences: "quote 0.42/unit, 10% off above 1,000, we cannot ship
@@ -78,6 +92,15 @@ function buildDraftPayload(
         [['role' => 'system', 'content' => customerContext($customer)]],
         $turns
     );
+
+    // Before the agent's note and the app's brief, both of which are
+    // about THIS reply and should outrank a standing rule: an agent who
+    // has typed "quote 0.42/unit" has already answered the question
+    // this would otherwise tell the model to go and ask.
+    $stale = staleReturnGap($messages);
+    if ($stale > 0) {
+        $payload[] = ['role' => 'system', 'content' => staleReturnNote($stale)];
+    }
 
     if ($guidance !== '') {
         $payload[] = ['role' => 'system', 'content' => guidanceContext($guidance)];
@@ -129,9 +152,23 @@ function buildTurns(array $messages): array
         }
     }
 
-    $turns = [];
+    $turns      = [];
+    $previousAt = null;
 
     foreach ($messages as $msg) {
+        // Mark a long silence where it actually falls. The note at the
+        // end of the payload says how to handle the customer coming
+        // back; this is what tells the model WHICH turns are from
+        // before they went quiet, so a price agreed last month is not
+        // read as part of today's conversation.
+        $at = messageTimestamp($msg);
+        if ($at !== null && $previousAt !== null && ($at - $previousAt) >= DRAFT_STALE_GAP_SECONDS) {
+            $turns[] = ['role' => 'system', 'content' => gapNote($at - $previousAt)];
+        }
+        if ($at !== null) {
+            $previousAt = $at;
+        }
+
         $role    = (($msg['direction'] ?? null) === 'out' || $msg['type'] === 'ai') ? 'assistant' : 'user';
         $content = trim((string) $msg['content']);
         $type    = (string) ($msg['msg_type'] ?? 'text');
@@ -202,6 +239,117 @@ function buildTurns(array $messages): array
     }
 
     return $turns;
+}
+
+/**
+ * When a message was stored, as a unix timestamp, or null without one.
+ *
+ * Legacy rows predate created_at, and a thread holding them simply has
+ * no gaps worth naming rather than gaps of forty-five years.
+ *
+ * @param array<string, mixed> $msg
+ */
+function messageTimestamp(array $msg): ?int
+{
+    $raw = trim((string) ($msg['created_at'] ?? ''));
+    if ($raw === '') {
+        return null;
+    }
+    $ts = strtotime($raw);
+    return $ts === false ? null : $ts;
+}
+
+/** A silence, in the roundest unit that still says something. */
+function humanGap(int $seconds): string
+{
+    $days = (int) floor($seconds / 86400);
+    if ($days >= 1) {
+        return $days . ' day' . ($days === 1 ? '' : 's');
+    }
+    $hours = max(1, (int) round($seconds / 3600));
+    return $hours . ' hour' . ($hours === 1 ? '' : 's');
+}
+
+/** The marker dropped between two turns with a long silence between them. */
+function gapNote(int $seconds): string
+{
+    return '[' . humanGap($seconds) . ' passed here with no contact. What follows may be a new '
+         . 'enquiry rather than a continuation of what is above.]';
+}
+
+/**
+ * How long the customer was silent before the message we are answering,
+ * or 0 when this is not that situation.
+ *
+ * Two conditions, and the second is what stops it nagging. There has to
+ * be a silence longer than DRAFT_STALE_GAP_SECONDS somewhere, and
+ * nobody can have replied since: once an agent or the robot has
+ * answered, the thread is live again and asking what they need would be
+ * asking a second time.
+ *
+ * Scanning backwards finds the MOST RECENT silence, which is the one
+ * the current message sits behind. An older gap further up the thread
+ * has already been dealt with.
+ *
+ * @param array<int, array<string, mixed>> $messages
+ */
+function staleReturnGap(array $messages): int
+{
+    $messages = array_values($messages);
+    $count    = count($messages);
+    if ($count < 2) {
+        return 0;
+    }
+
+    $burstStart = null;
+    $gap        = 0;
+
+    for ($i = $count - 1; $i > 0; $i--) {
+        $at   = messageTimestamp($messages[$i]);
+        $prev = messageTimestamp($messages[$i - 1]);
+        if ($at === null || $prev === null) {
+            continue;
+        }
+        if (($at - $prev) >= DRAFT_STALE_GAP_SECONDS) {
+            $burstStart = $i;
+            $gap        = $at - $prev;
+            break;
+        }
+    }
+
+    if ($burstStart === null) {
+        return 0;
+    }
+
+    for ($i = $burstStart; $i < $count; $i++) {
+        $msg = $messages[$i];
+        if (($msg['direction'] ?? null) === 'out' || ($msg['type'] ?? '') === 'ai') {
+            return 0;
+        }
+    }
+
+    return $gap;
+}
+
+/**
+ * What to do about a customer who has just come back.
+ *
+ * The last clause matters as much as the rest: somebody who writes
+ * "I need 2,000 of the 500ml jars" after a month away has already said
+ * what they want, and asking them to say it again reads as not having
+ * been listened to.
+ */
+function staleReturnNote(int $seconds): string
+{
+    return 'CONTEXT AGE: the customer went quiet for ' . humanGap($seconds)
+         . ' and has now written again, and nobody has replied since they came back. '
+         . 'Do not assume this continues the earlier conversation. Treat everything before the '
+         . 'silence as background only: do not repeat, confirm or rely on prices, quantities, '
+         . 'sizes or delivery dates from it as though they still stand, and do not open as if the '
+         . 'previous thread were still running. '
+         . 'Establish what they need THIS time before offering anything. '
+         . 'If their new message already says plainly what they want, answer that -- asking them '
+         . 'to repeat something they have just told you is worse than assuming too much.';
 }
 
 /**
