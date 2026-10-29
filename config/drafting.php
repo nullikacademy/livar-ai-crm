@@ -139,6 +139,16 @@ function buildTurns(array $messages): array
         if (count($attachIds) >= DRAFT_IMAGE_LIMIT) {
             break;
         }
+        // Inbound only, for two reasons. A photo we sent is one we
+        // already know about, so re-sending the bytes buys nothing and
+        // would spend a slot the customer's own photos need. And an
+        // image part is only valid on a user turn -- attaching one to
+        // an assistant turn is a 400 the adaptive retry in AI::chat()
+        // cannot do anything about, because nothing is wrong with the
+        // parameters.
+        if (($msg['direction'] ?? null) === 'out' || ($msg['type'] ?? '') === 'ai') {
+            continue;
+        }
         if (($msg['msg_type'] ?? '') === 'image' && !empty($msg['_media_path'])) {
             $attachIds[(int) $msg['id']] = true;
         }
@@ -404,12 +414,20 @@ function imageTurn(array $msg, string $role, string $caption, bool $attach): ?ar
 {
     $stored = trim((string) ($msg['ai_caption'] ?? ''));
 
-    if ($attach) {
+    // $role is checked as well as $attach: an image part belongs only on
+    // a user turn. See the inbound-only filter in buildTurns().
+    if ($attach && $role === 'user') {
         $abs  = media_abs_path((string) $msg['_media_path']);
         $part = $abs !== null ? AI::imagePart($abs, (string) ($msg['media_mime'] ?? 'image/jpeg')) : null;
 
         if ($part !== null) {
-            $text = $caption !== '' ? $caption : 'Sent this photo.';
+            // Said outright, because a thread can hold two images that
+            // look alike to the model -- this one, and the creative from
+            // the advert the customer tapped. Which of them the customer
+            // actually took a picture of changes the whole reply.
+            $text = '[PHOTO SENT BY THE CUSTOMER]'
+                  . ($caption !== '' ? ' They wrote with it: ' . $caption : ' No caption.');
+
             return [
                 'role'    => $role,
                 'content' => [['type' => 'text', 'text' => $text], $part],
@@ -418,8 +436,10 @@ function imageTurn(array $msg, string $role, string $caption, bool $attach): ?ar
         // File is gone from disk; fall through to the caption.
     }
 
-    $described = $stored !== '' ? '[photo: ' . $stored . ']' : '[sent a photo]';
-    $text      = $caption !== '' ? $described . ' ' . $caption : $described;
+    $described = $stored !== ''
+        ? '[photo sent by the customer: ' . $stored . ']'
+        : '[sent a photo]';
+    $text = $caption !== '' ? $described . ' ' . $caption : $described;
 
     return ['role' => $role, 'content' => $text];
 }
@@ -468,32 +488,58 @@ function referralTurn(array $msg, string $role, bool $attach): ?array
         return null;
     }
 
-    $source = ($ref['source_type'] ?? '') === 'post' ? 'post' : 'ad';
-    $facts  = array_filter([
-        $ref['headline'] ?? '',
-        $ref['body'] ?? '',
-    ], static fn(string $v): bool => trim($v) !== '');
+    $source   = ($ref['source_type'] ?? '') === 'post' ? 'post' : 'ad';
+    $headline = trim((string) ($ref['headline'] ?? ''));
+    $body     = trim((string) ($ref['body'] ?? ''));
 
-    $text = '[Arrived from your Meta ' . $source . ']';
-    if ($facts) {
-        $text .= ' ' . implode(' — ', $facts);
-    }
+    $withImage = $attach
+        && $role === 'user'
+        && !empty($msg['_referral_path']);
 
-    if ($attach && !empty($msg['_referral_path'])) {
+    $part = null;
+    if ($withImage) {
         $abs  = media_abs_path((string) $msg['_referral_path']);
         $part = $abs !== null
             ? AI::imagePart($abs, (string) ($msg['referral_media_mime'] ?? 'image/jpeg'))
             : null;
-
-        if ($part !== null) {
-            return [
-                'role'    => $role,
-                'content' => [['type' => 'text', 'text' => $text], $part],
-            ];
-        }
-        // Creative gone from disk; the headline and body still stand.
     }
 
+    $lines = [$part !== null
+        ? '[OUR OWN ' . strtoupper($source) . ' CREATIVE — the customer did NOT send this image]'
+        : '[Arrived from our own Meta ' . $source . ']'];
+
+    if ($headline !== '') {
+        $lines[] = 'Headline: ' . $headline;
+    }
+    if ($body !== '') {
+        $lines[] = 'Ad text: ' . $body;
+    }
+
+    // The warning the whole turn exists for. Without it the model reads
+    // the styling as a requirement: an ad showing jars filled with
+    // almonds produces replies about almond packaging to a customer who
+    // never mentioned almonds and may be bottling honey. What the ad
+    // establishes is which PRODUCT caught their eye, never what they
+    // intend to put in it.
+    $lines[] = 'This is our marketing, not the customer speaking. Whatever is pictured or '
+             . 'described in it is how WE chose to present the product: jars photographed '
+             . 'with almonds in them are a styling choice, not a customer who wants almond '
+             . 'jars. Use it only to know which product drew them in. Do not state or imply '
+             . 'what they will be packing, and do not carry the contents, quantities or '
+             . 'prices shown in the creative into the reply as though they had asked for '
+             . 'them — establish that from the customer.';
+
+    $text = implode("\n", $lines);
+
+    if ($part !== null) {
+        return [
+            'role'    => $role,
+            'content' => [['type' => 'text', 'text' => $text], $part],
+        ];
+    }
+
+    // Creative gone from disk, or not the one carrying the image: the
+    // headline, the ad text and the warning all still stand.
     return ['role' => $role, 'content' => $text];
 }
 

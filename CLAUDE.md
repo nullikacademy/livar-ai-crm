@@ -250,6 +250,21 @@ README** — the template stays placeholders-only.
   per press from a settings button. Every transcription is a paid call
   and there is no job queue here to pace one with, so nothing retries on
   its own and a run that finds nothing pending makes no calls at all.
+- **An advert creative is not a photo the customer sent, and it is not
+  a brief.** `referralTurn()` labels it as ours in words the model
+  cannot read past, because a `user` turn carrying an image is
+  otherwise indistinguishable from the customer having taken the
+  picture. It also says the contents are styling: an ad showing jars
+  full of almonds produced replies about almond packaging to customers
+  who never mentioned almonds. An ad establishes which PRODUCT drew
+  them in, never what they will put in it. The customer's own photos
+  say so too, for the same reason — both can sit in one thread.
+- **An image part is only valid on a `user` turn.** `buildTurns()`
+  counts only inbound photos towards `DRAFT_IMAGE_LIMIT` and
+  `imageTurn()` checks the role before attaching. A photo we sent is
+  one we already know about, so the bytes buy nothing, and attaching
+  one to an assistant turn is a 400 that `AI::chat()`'s adaptive retry
+  cannot fix — nothing is wrong with the parameters.
 - **Photos reach the model two ways.** The most recent `DRAFT_IMAGE_LIMIT`
   photos are attached as real images; every photo also gets a one-line
   `ai_caption` on arrival, used for the sidebar preview and for older
