@@ -126,6 +126,10 @@
         // Highest message id already on screen. The conversation poll asks
         // for rows after this one instead of re-fetching the thread.
         maxMessageId: 0,
+        // Every message id that currently has a bubble on screen. Two
+        // paths can hand the same row to appendMessages() twice; this is
+        // what makes the second one a no-op. See appendMessages().
+        renderedIds: new Set(),
         // A file staged by api/upload.php, waiting for Send.
         attachment: null,
         // The catalog configured on the settings page, if any. Loaded
@@ -926,6 +930,10 @@
 
     function clearMessageBubbles() {
         el.chatMessages.querySelectorAll('.bubble-row, .chat__day-divider, .chat__empty-state').forEach((n) => n.remove());
+        // No bubbles on screen means no ids rendered. Clearing here
+        // rather than in each caller is what keeps the set from drifting
+        // out of step with the DOM it is describing.
+        state.renderedIds.clear();
     }
 
     /** Full teardown and rebuild. Only for switching conversations. */
@@ -937,7 +945,7 @@
             empty.className = 'chat__empty-state';
             empty.textContent = 'No messages yet. Start the conversation below.';
             el.chatMessages.appendChild(empty);
-            trackMaxId(state.messages);
+            trackMessageIds(state.messages);
             return;
         }
 
@@ -951,7 +959,7 @@
         });
 
         el.chatMessages.appendChild(frag);
-        trackMaxId(state.messages);
+        trackMessageIds(state.messages);
 
         if (highlightLastAi && lastAiRow) {
             const bubble = lastAiRow.querySelector('.bubble');
@@ -971,6 +979,19 @@
     function appendMessages(newOnes) {
         if (!newOnes || newOnes.length === 0) return;
 
+        // Drop anything already drawn. Two paths deliver the same row
+        // twice: a poll still in flight when Send stores and appends the
+        // very reply that poll is about to return, and -- before the
+        // guard in pollMessages() -- two ticks overlapping on one
+        // since_id. Either way the row appeared as a second identical
+        // bubble that only a reload cleared, because a reload rebuilds
+        // the thread from the server.
+        newOnes = newOnes.filter((m) => {
+            const id = Number(m.id);
+            return !Number.isFinite(id) || !state.renderedIds.has(id);
+        });
+        if (newOnes.length === 0) return;
+
         // The first arrival replaces the empty-state placeholder.
         el.chatMessages.querySelector('.chat__empty-state')?.remove();
 
@@ -985,15 +1006,25 @@
             frag.appendChild(buildBubbleRow(msg));
         });
         el.chatMessages.appendChild(frag);
-        trackMaxId(newOnes);
+        trackMessageIds(newOnes);
 
         if (wasAtBottom) scrollMessagesToBottom(true);
     }
 
-    function trackMaxId(messages) {
+    /**
+     * Records which rows are on screen, and the highest id among them.
+     *
+     * The highest id is what the poll asks "anything newer?" with; the
+     * set is what stops the same row being drawn twice. The optimistic
+     * bubble's id is the string 'pending', which is not a number and so
+     * lands in neither -- it is a placeholder, not a stored row.
+     */
+    function trackMessageIds(messages) {
         messages.forEach((m) => {
             const id = Number(m.id);
-            if (Number.isFinite(id) && id > state.maxMessageId) state.maxMessageId = id;
+            if (!Number.isFinite(id)) return;
+            state.renderedIds.add(id);
+            if (id > state.maxMessageId) state.maxMessageId = id;
         });
     }
 
@@ -2081,7 +2112,7 @@
         }
 
         state.messages.push(message);
-        trackMaxId([message]);
+        trackMessageIds([message]);
 
         const fresh = buildBubbleRow(message);
         if (node) {
@@ -3182,6 +3213,7 @@
 
     let messagePollTimer = null;
     let sidebarPollTimer = null;
+    let messagePollInFlight = false;
 
     function startPolling() {
         stopPolling();
@@ -3222,8 +3254,12 @@
     /** Asks only for rows newer than the last one on screen. */
     async function pollMessages() {
         const sessionId = state.selectedSessionId;
-        if (!sessionId || state.isSending) return;
+        // setInterval does not wait for the last tick to finish. Without
+        // this, a poll slower than POLL_MESSAGES_MS leaves two in flight
+        // carrying the same since_id, and both append what comes back.
+        if (!sessionId || state.isSending || messagePollInFlight) return;
 
+        messagePollInFlight = true;
         try {
             const params = new URLSearchParams({
                 session_id: sessionId,
@@ -3257,6 +3293,8 @@
             refreshWindowNotice();
         } catch {
             /* A dropped poll is not worth a toast; the next tick retries. */
+        } finally {
+            messagePollInFlight = false;
         }
     }
 
