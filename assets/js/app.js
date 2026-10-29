@@ -951,8 +951,14 @@
 
         const frag = document.createDocumentFragment();
         let lastAiRow = null;
+        let lastDay = null;
 
         state.messages.forEach((msg) => {
+            const at = messageDate(msg);
+            if (at && dayKey(at) !== lastDay) {
+                lastDay = dayKey(at);
+                frag.appendChild(buildDayDivider(at));
+            }
             const row = buildBubbleRow(msg);
             frag.appendChild(row);
             if (isOutbound(msg)) lastAiRow = row;
@@ -1000,8 +1006,18 @@
         const { scrollTop, scrollHeight, clientHeight } = el.chatMessages;
         const wasAtBottom = scrollHeight - scrollTop - clientHeight < 120;
 
+        // Carry on from the day already on screen, so a thread left open
+        // overnight gets a "Today" instead of running yesterday straight
+        // into this morning. Read before anything is pushed.
+        let lastDay = lastRenderedDay();
+
         const frag = document.createDocumentFragment();
         newOnes.forEach((msg) => {
+            const at = messageDate(msg);
+            if (at && dayKey(at) !== lastDay) {
+                lastDay = dayKey(at);
+                frag.appendChild(buildDayDivider(at));
+            }
             state.messages.push(msg);
             frag.appendChild(buildBubbleRow(msg));
         });
@@ -1038,6 +1054,64 @@
         if (msg.direction === 'out') return true;
         if (msg.direction === 'in') return false;
         return msg.type === 'ai';
+    }
+
+    /** When a message was stored, or null on a row that has no stamp. */
+    function messageDate(msg) {
+        if (!msg || !msg.created_at) return null;
+        const at = new Date(msg.created_at);
+        return Number.isNaN(at.getTime()) ? null : at;
+    }
+
+    /** HH:MM, in the reader's own timezone and clock convention. */
+    function formatClock(date) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    /**
+     * Which local day a moment belongs to.
+     *
+     * Built from the local parts rather than from toISOString(), which
+     * groups by UTC -- that would file an evening's messages under
+     * tomorrow for anyone east of Greenwich, and the divider would
+     * appear in the middle of one conversation.
+     */
+    function dayKey(date) {
+        return date.getFullYear() + '-' + date.getMonth() + '-' + date.getDate();
+    }
+
+    function dayLabel(date) {
+        const today = new Date();
+        const yesterday = new Date(today);
+        yesterday.setDate(today.getDate() - 1);
+
+        if (dayKey(date) === dayKey(today)) return 'Today';
+        if (dayKey(date) === dayKey(yesterday)) return 'Yesterday';
+
+        // The year is only in question on a thread that has run a long
+        // time, so it is left off for this one.
+        return date.toLocaleDateString([], date.getFullYear() === today.getFullYear()
+            ? { day: 'numeric', month: 'long' }
+            : { day: 'numeric', month: 'long', year: 'numeric' });
+    }
+
+    /** The chip a day's messages start under. */
+    function buildDayDivider(date) {
+        const wrap = document.createElement('div');
+        wrap.className = 'chat__day-divider';
+        const chip = document.createElement('span');
+        chip.textContent = dayLabel(date);
+        wrap.appendChild(chip);
+        return wrap;
+    }
+
+    /** The day the last message on screen falls on, or null if none. */
+    function lastRenderedDay() {
+        for (let i = state.messages.length - 1; i >= 0; i--) {
+            const at = messageDate(state.messages[i]);
+            if (at) return dayKey(at);
+        }
+        return null;
     }
 
     function buildBubbleRow(msg) {
@@ -1095,9 +1169,11 @@
 
         if (isOurs) {
             appendSourceTag(bubble, msg);
-            appendStatus(bubble, msg);
+            appendMeta(bubble, msg, true);
             // Copy only makes sense for something with words in it.
             if (msg.content) appendCopyAction(bubble, msg.content);
+        } else {
+            appendMeta(bubble, msg, false);
         }
 
         row.appendChild(bubble);
@@ -1593,9 +1669,39 @@
         }
     }
 
-    function appendStatus(bubble, msg) {
-        if (!msg.wa_status) return;
-        const node = document.createElement('div');
+    /**
+     * The time a message was sent, and on ours the delivery tick beside
+     * it.
+     *
+     * One line, the way a phone shows it. A tick on its own says a reply
+     * was read but not when, and "when" is what somebody scrolling back
+     * through a thread is actually trying to work out.
+     */
+    function appendMeta(bubble, msg, isOurs) {
+        const meta = document.createElement('div');
+        meta.className = 'bubble__meta';
+
+        const at = messageDate(msg);
+        if (at) {
+            const time = document.createElement('span');
+            time.className = 'bubble__time';
+            time.textContent = formatClock(at);
+            // The full date on hover, so every bubble does not have to
+            // spend a line on something only occasionally wanted.
+            time.title = at.toLocaleString();
+            meta.appendChild(time);
+        }
+
+        if (isOurs && msg.wa_status) meta.appendChild(buildStatusNode(bubble, msg));
+        if (meta.childElementCount > 0) bubble.appendChild(meta);
+    }
+
+    /**
+     * The delivery tick. Takes the bubble because a deleted message
+     * changes how the whole bubble reads, not just this line.
+     */
+    function buildStatusNode(bubble, msg) {
+        const node = document.createElement('span');
         node.className = 'bubble__status';
 
         if (msg.wa_status === 'deleted') {
@@ -1618,7 +1724,7 @@
             node.textContent = '✓ Sent';
         }
 
-        bubble.appendChild(node);
+        return node;
     }
 
     function appendCopyAction(bubble, content) {
@@ -2066,6 +2172,10 @@
             id: 'pending',
             type: 'ai',
             direction: 'out',
+            // Stamped locally so the bubble carries a time the moment it
+            // appears; the stored row replaces it a breath later and the
+            // line does not jump.
+            created_at: new Date().toISOString(),
             msg_type: attachment ? attachment.msgType : 'text',
             content: text,
             media_url: attachment ? attachment.previewUrl : null,
