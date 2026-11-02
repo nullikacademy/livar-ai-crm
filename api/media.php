@@ -75,8 +75,26 @@ try {
     // are written once.
     media_stream($abs, (string) ($row['media_mime'] ?? ''), (string) ($row['media_name'] ?? ''));
 } catch (WhatsAppException $e) {
+    // The provider's own wording, and the status it came back with --
+    // the same exception api/send.php and api/draft.php are allowed to
+    // pass through, for the same reason. fetchMedia() distinguishes five
+    // failures: no metadata, no download link, the download itself, an
+    // empty file, and one too large. Flattening them into "could not be
+    // loaded" left the one fact that decides what to do about it --
+    // expired media, a rejected key, a file too big -- visible only in a
+    // log on the server. Nothing here is a credential: the key is sent,
+    // never echoed.
     error_log('[api/media] ' . $e->getMessage());
-    json_error('That file could not be loaded from WhatsApp.', 502);
+    json_error(
+        $e->getMessage() . ' (WhatsApp said HTTP ' . $e->httpStatus . ')',
+        $e->httpStatus >= 400 && $e->httpStatus < 600 ? $e->httpStatus : 502
+    );
+} catch (MediaStoreException $e) {
+    // Downloaded fine and could not be saved, which is a different
+    // problem with a different fix -- and the generic 500 below read as
+    // though the file were at fault.
+    error_log('[api/media] ' . $e->getMessage());
+    json_error($e->getMessage(), $e->httpStatus);
 } catch (SupabaseException $e) {
     error_log('[api/media] ' . $e->getMessage());
     json_error($e->getMessage(), $e->httpStatus);

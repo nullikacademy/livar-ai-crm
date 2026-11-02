@@ -2498,3 +2498,14 @@ img.flag {
     color: #8A5A00;
     font-size: 12.5px;
 }
+
+/* The reason a media file would not load, under the note that says it
+   did not. Quieter than the note: it is detail for whoever is going to
+   do something about it, not the headline. */
+.bubble__unsupported-why {
+    margin-top: 3px;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--ink-3);
+}
+.bubble--ours .bubble__unsupported-why { color: rgba(255, 255, 255, 0.75); }

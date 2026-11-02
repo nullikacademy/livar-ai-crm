@@ -1449,6 +1449,7 @@
      * those happened or whether it is worth asking the customer again.
      */
     function replaceWithMissingMedia(bubble, node, label) {
+        const url = node.currentSrc || node.src || '';
         node.remove();
 
         // The caption, if there is one, stays: it is our own text and
@@ -1464,6 +1465,37 @@
         }
 
         bubble.classList.remove('bubble--media');
+        if (url) explainMissingMedia(note, url);
+    }
+
+    /**
+     * Asks the server why, and says so under the note.
+     *
+     * An <img>, <video> or <audio> that fails to load reports nothing --
+     * no status, no body -- so the bubble can only ever say the file is
+     * not there. But api/media.php has a real reason, and the reasons
+     * differ in what they ask of the person reading: media WhatsApp has
+     * expired means ask the customer to send it again, a rejected key or
+     * an unwritable directory means nobody should be asking the customer
+     * anything. Fetching the same URL a second time is what turns the
+     * one into the other, and it only ever happens on a failure.
+     */
+    async function explainMissingMedia(note, url) {
+        try {
+            const res = await fetch(url, { headers: { Accept: 'application/json' } });
+            if (res.ok) return;
+
+            const data = await res.json().catch(() => null);
+            const reason = data && typeof data.error === 'string' ? data.error.trim() : '';
+            if (reason === '') return;
+
+            const why = document.createElement('div');
+            why.className = 'bubble__unsupported-why';
+            why.textContent = reason;
+            note.after(why);
+        } catch {
+            /* Offline, or the request was cancelled. The note still stands. */
+        }
     }
 
     function missingMediaNote(label) {
